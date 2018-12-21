@@ -9,17 +9,47 @@
 #include <pcl/visualization/pcl_visualizer.h>
 
 
-#include "point_cloud_graph_construction.h"
+#include "graph_construction.h"
 
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////// INTERFACES /////////////////////////////////////////////////////////
+////////////////////////////////////////////// SAMPLING //////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::samplePoints() {
-  ScopeTime t("Point sampling computation", debug_);
+void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neigh_size) {
+  // ScopeTime t("Point sampling computation", debug_);
+  ScopeTime t("Initialization (PointCloudGraphConstructor)", debug_);
+
+  // Read the point cloud
+  if (pcl::io::loadPCDFile<PointT> (filename_.c_str(), *pc_) == -1) {
+    PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
+    return;
+  }
+
+  // Data augmentation
+  scale_ = scale_points_unit_sphere (*pc_, gridsize_/2);
+  neigh_size = neigh_size * gridsize_/2;
+  augment_data(pc_, params_, gridsize_, debug_);
+
+  if (params_.scale && debug_)
+    std::cout << "Scale: " << scale_ << std::endl;
+
+  // Initialize the tree
+  tree_->setInputCloud (pc_);
+
+  // Prepare the voxel grid
+  lut_.resize (gridsize_);
+  for (uint i = 0; i < gridsize_; ++i) {
+      lut_[i].resize (gridsize_);
+      for (uint j = 0; j < gridsize_; ++j)
+        lut_[i][j].resize (gridsize_);
+  }
+
+  voxelize (*pc_, lut_, gridsize_);
+
+  ////////////////////////////
   sampled_indices_.clear();
   sampled_indices_.reserve(nodes_nb_);
   // Prepare the values for the sampling procedure
@@ -31,14 +61,14 @@ void PointCloudGraphConstructor::samplePoints() {
   std::vector<bool> probs(pc_->points.size(), true);
 
   ////////////////////////////
-  if (params_.min_angle_z_normal > 0.) {
+  if (min_angle_z_normal > 0.) {
     Eigen::Vector3f z(0., 0., 1.);
     z.normalize();
     for (uint i=0; i<pc_->points.size(); i++) {
       Eigen::Vector3f n1 = pc_->points[i].getNormalVector3fMap();
       n1.normalize();
 
-      if (acos(fabs(n1.dot(z))) < params_.min_angle_z_normal*M_PI/180.) {
+      if (acos(fabs(n1.dot(z))) < min_angle_z_normal*M_PI/180.) {
         probs[i] = false;
         total_weight -= 1;
       }
@@ -82,9 +112,14 @@ void PointCloudGraphConstructor::samplePoints() {
       continue;
     }
 
-    if (params_.neigh_size > 0.) {
+    if (neigh_size > 0.) {
       // Extract the sampled point neighborhood
-      tree_->radiusSearch(pc_->points[index], params_.neigh_size, k_indices, k_sqr_distances);
+      tree_->radiusSearch(pc_->points[index], neigh_size, k_indices, k_sqr_distances);
+      nodes_elts_.push_back(k_indices);
+
+      // std::cout << "For node " << sampled_indices_.size()
+      //           << " aka nodes_elts_ nb: " << nodes_elts_.size()
+      //           << " we have nb neighbors: " << k_indices.size() << std::endl;
 
       // Update the sampling probability
       for (uint i=0; i < k_indices.size(); i++) {
@@ -110,7 +145,7 @@ void PointCloudGraphConstructor::samplePoints() {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::getValidIndices(int* valid_indices) {
+void GraphConstructor::getValidIndices(int* valid_indices) {
   for (uint i=0; i < nodes_nb_; i++) {
     if (valid_indices_[i])
       valid_indices[i] = 1;
@@ -124,21 +159,21 @@ void PointCloudGraphConstructor::getValidIndices(int* valid_indices) {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::occupancyAdjacency(double* adj_mat, unsigned int neigh_nb) {
-  pcl::PointCloud<pcl::PointXYZINormal>::Ptr local_cloud(new pcl::PointCloud<pcl::PointXYZINormal>);
+void GraphConstructor::occupancyAdjacency(double* adj_mat, unsigned int neigh_nb) {
+  pcl::PointCloud<PointT>::Ptr local_cloud(new pcl::PointCloud<PointT>);
   for (uint pt_idx=0; pt_idx < sampled_indices_.size(); pt_idx++) {
     local_cloud->points.push_back(pc_->points[sampled_indices_[pt_idx]]);
   }
 
-  pcl::search::KdTree<pcl::PointXYZINormal>::Ptr local_tree(new pcl::search::KdTree<pcl::PointXYZINormal>);
+  pcl::search::KdTree<PointT>::Ptr local_tree(new pcl::search::KdTree<PointT>);
   local_tree->setInputCloud(local_cloud);
   std::vector<int> k_indices;
   std::vector<float> k_sqr_distances;
   float occ_ratio;
 
   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-    pcl::PointXYZINormal pt = local_cloud->points[pt_idx];
-    int k_elts = neigh_nb < local_cloud->points.size() ? neigh_nb : local_cloud->points.size();
+    PointT pt = local_cloud->points[pt_idx];
+    uint k_elts = neigh_nb < local_cloud->points.size() ? neigh_nb : local_cloud->points.size();
     local_tree->nearestKSearch(pt, k_elts, k_indices, k_sqr_distances);
 
     Eigen::Vector4f v1 = local_cloud->points[pt_idx].getVector4fMap ();
@@ -159,7 +194,7 @@ void PointCloudGraphConstructor::occupancyAdjacency(double* adj_mat, unsigned in
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::fullConnectionAdjacency(double* adj_mat) {
+void GraphConstructor::fullConnectionAdjacency(double* adj_mat) {
   ScopeTime t("Adjacency matrix computation", debug_);
   for (uint index1=0; index1 < nodes_nb_; index1++) {
     for (uint index2=0; index2 < nodes_nb_; index2++) {
@@ -169,7 +204,7 @@ void PointCloudGraphConstructor::fullConnectionAdjacency(double* adj_mat) {
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::correctAdjacencyForValidity(double* adj_mat) {
+void GraphConstructor::correctAdjacencyForValidity(double* adj_mat) {
   for (uint index1=0; index1 < nodes_nb_; index1++) {
     for (uint index2=0; index2 < nodes_nb_; index2++) {
       if (!valid_indices_[index1] || !valid_indices_[index2])
@@ -185,7 +220,7 @@ void PointCloudGraphConstructor::correctAdjacencyForValidity(double* adj_mat) {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::coordsEdgeFeatures(double* edge_feats) {
+void GraphConstructor::coordsEdgeFeatures(double* edge_feats) {
   int index1, index2;
 
   for (uint pt1_idx=0; pt1_idx < sampled_indices_.size(); pt1_idx++) {
@@ -207,7 +242,7 @@ void PointCloudGraphConstructor::coordsEdgeFeatures(double* edge_feats) {
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::rotZEdgeFeatures(double* edge_feats) {
+void GraphConstructor::rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal) {
   int index1, index2;
   Eigen::Vector3f z(0., 0., 1.);
   z.normalize();
@@ -218,7 +253,7 @@ void PointCloudGraphConstructor::rotZEdgeFeatures(double* edge_feats) {
     Eigen::Vector3f n1 = pc_->points[index1].getNormalVector3fMap();
     n1.normalize();
 
-    if (acos(fabs(n1.dot(z))) < params_.min_angle_z_normal*M_PI/180.) {
+    if (acos(fabs(n1.dot(z))) < min_angle_z_normal*M_PI/180.) {
       valid_indices_[pt1_idx] = false;
       continue;
     }
@@ -232,21 +267,10 @@ void PointCloudGraphConstructor::rotZEdgeFeatures(double* edge_feats) {
     Eigen::Vector3f w = n_axis.cross(z);
 
     Eigen::Matrix3f lrf;
-    lrf(0,0) = n_axis(0);
-    lrf(0,1) = n_axis(1);
-    lrf(0,2) = n_axis(2);
 
-    lrf(1,0) = w(0);
-    lrf(1,1) = w(1);
-    lrf(1,2) = w(2);
-
-    lrf(2,0) = z(0);
-    lrf(2,1) = z(1);
-    lrf(2,2) = z(2);
-
-    // lrf.row(0) << n1;
-    // lrf.row(1) << w;
-    // lrf.row(2) << z;
+    lrf.row(0) << n1;
+    lrf.row(1) << w;
+    lrf.row(2) << z;
 
     for (uint pt2_idx=0; pt2_idx < sampled_indices_.size(); pt2_idx++) {
       index2 = sampled_indices_[pt2_idx];
@@ -278,113 +302,111 @@ void PointCloudGraphConstructor::rotZEdgeFeatures(double* edge_feats) {
 //////////////////////////////////////////// NODE FEATURES ///////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::esf3dNodeFeatures(double** result) {
-  uint p1_idx, p2_idx, rdn_weight;
-  float pair_nb=0.;
-  uint max_pair_nb;
-  const int sample_pair_nb = 1000;
-  std::vector< int > k_indices;
-  std::vector< float > k_sqr_distances;
-  Eigen::Vector4f v1, v2, n1, n2, v12;
-  double dist, na, va;
-  uint d_idx, na_idx, va_idx;
-  float max_dist = 0.;
-  if (params_.mesh) {
-    for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-      v1 = pc_->points[nodes_elts_[pt_idx][0]].getVector4fMap ();
-      for (uint i=nodes_elts_[pt_idx].size()/2; i < nodes_elts_[pt_idx].size(); i++) {
-        v2 = pc_->points[nodes_elts_[pt_idx][i]].getVector4fMap ();
-        v12 = v1-v2;
-        float dist = 2.*v12.norm();
-        if (dist > max_dist)
-          max_dist = dist;
-      }
-    }
-  } else
-    max_dist = 2*params_.neigh_size;
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// void GraphConstructor::esf3dNodeFeatures(double** result) {
+//   uint p1_idx, p2_idx, rdn_weight;
+//   float pair_nb=0.;
+//   uint max_pair_nb;
+//   const int sample_pair_nb = 1000;
+//   std::vector< int > k_indices;
+//   std::vector< float > k_sqr_distances;
+//   Eigen::Vector4f v1, v2, n1, n2, v12;
+//   double dist, na, va;
+//   uint d_idx, na_idx, va_idx;
+//   float max_dist = 0.;
+//   if (params_.mesh) {
+//     for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
+//       v1 = pc_->points[nodes_elts_[pt_idx][0]].getVector4fMap ();
+//       for (uint i=nodes_elts_[pt_idx].size()/2; i < nodes_elts_[pt_idx].size(); i++) {
+//         v2 = pc_->points[nodes_elts_[pt_idx][i]].getVector4fMap ();
+//         v12 = v1-v2;
+//         float dist = 2.*v12.norm();
+//         if (dist > max_dist)
+//           max_dist = dist;
+//       }
+//     }
+//   } else
+//     max_dist = 2*params_.neigh_size;
 
-  for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-    if (params_.mesh)
-      k_indices = nodes_elts_[pt_idx];
-    else
-      tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
+//   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
+//     k_indices = nodes_elts_[pt_idx];
+//     // tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
 
-    pair_nb = 0.;
-    max_pair_nb = k_indices.size() * (k_indices.size() - 1) / 2;
+//     pair_nb = 0.;
+//     max_pair_nb = k_indices.size() * (k_indices.size() - 1) / 2;
 
-    if (max_pair_nb < sample_pair_nb / 2) {
-      if (debug_)
-        std::cout << "Node " << pt_idx << " max pair nb: " << max_pair_nb << std::endl;
+//     if (max_pair_nb < sample_pair_nb / 2) {
+//       if (debug_)
+//         std::cout << "Node " << pt_idx << " max pair nb: " << max_pair_nb << std::endl;
 
-      valid_indices_[pt_idx] = false;
-    }
+//       valid_indices_[pt_idx] = false;
+//     }
 
-    for (uint index1=0; index1 < k_indices.size(); index1++) {
-      for (uint index2=index1+1; index2 < k_indices.size(); index2++) {
-        if (max_pair_nb < 10*sample_pair_nb) {
-          rdn_weight = rand() % max_pair_nb;
-          if (rdn_weight > sample_pair_nb)
-            continue;
+//     for (uint index1=0; index1 < k_indices.size(); index1++) {
+//       for (uint index2=index1+1; index2 < k_indices.size(); index2++) {
+//         if (max_pair_nb < 10*sample_pair_nb) {
+//           rdn_weight = rand() % max_pair_nb;
+//           if (rdn_weight > sample_pair_nb)
+//             continue;
 
-          p1_idx = k_indices[index1];
-          p2_idx = k_indices[index2];
-        } else {
-          rdn_weight = rand() % k_indices.size();
-          p1_idx = k_indices[rdn_weight];
-          rdn_weight = rand() % k_indices.size();
-          p2_idx = k_indices[rdn_weight];
-        }
+//           p1_idx = k_indices[index1];
+//           p2_idx = k_indices[index2];
+//         } else {
+//           rdn_weight = rand() % k_indices.size();
+//           p1_idx = k_indices[rdn_weight];
+//           rdn_weight = rand() % k_indices.size();
+//           p2_idx = k_indices[rdn_weight];
+//         }
 
-        if (std::isnan(pc_->points[p1_idx].normal_x) || std::isnan(pc_->points[p2_idx].normal_x))
-          continue;
+//         if (std::isnan(pc_->points[p1_idx].normal_x) || std::isnan(pc_->points[p2_idx].normal_x))
+//           continue;
 
-        // Get the vectors
-        v1 = pc_->points[p1_idx].getVector4fMap ();
-        v2 = pc_->points[p2_idx].getVector4fMap ();
-        n1 = pc_->points[p1_idx].getNormalVector4fMap ();
-        n2 = pc_->points[p2_idx].getNormalVector4fMap ();
+//         // Get the vectors
+//         v1 = pc_->points[p1_idx].getVector4fMap ();
+//         v2 = pc_->points[p2_idx].getVector4fMap ();
+//         n1 = pc_->points[p1_idx].getNormalVector4fMap ();
+//         n2 = pc_->points[p2_idx].getNormalVector4fMap ();
 
-        v12 = v1 - v2;
+//         v12 = v1 - v2;
 
-        // Get the indices
-        dist = ceil(4*(v12.norm() / max_dist)) - 1;
-        d_idx = static_cast<uint>(std::min(std::max(dist, 0.), 3.));
-        na = ceil(2*(n1.dot(n2) + 1)) - 1;
-        na_idx = static_cast<uint>(std::min(std::max(na, 0.), 3.));
-        v12.normalize();
-        va = ceil(4*std::max(fabs(v12.dot(n1)), fabs(v12.dot(n2)))) - 1;
-        va_idx = static_cast<uint>(std::min(std::max(va, 0.), 3.));
+//         // Get the indices
+//         dist = ceil(4*(v12.norm() / max_dist)) - 1;
+//         d_idx = static_cast<uint>(std::min(std::max(dist, 0.), 3.));
+//         na = ceil(2*(n1.dot(n2) + 1)) - 1;
+//         na_idx = static_cast<uint>(std::min(std::max(na, 0.), 3.));
+//         v12.normalize();
+//         va = ceil(4*std::max(fabs(v12.dot(n1)), fabs(v12.dot(n2)))) - 1;
+//         va_idx = static_cast<uint>(std::min(std::max(va, 0.), 3.));
 
-        if (na_idx > 3 || d_idx > 3 || va_idx > 3) {
-          std::cout << d_idx << " " << na_idx << " " << va_idx << std::endl;
-          std::cout << " " << n1 <<  "\n --- \n " << n2 << std::endl;
-          std::cout << "._._._.\n" << v12 << "\n._._._." << std::endl;
-          std::cout << 4*4*d_idx + 4*na_idx + va_idx << std::endl;
-        }
+//         if (na_idx > 3 || d_idx > 3 || va_idx > 3) {
+//           std::cout << d_idx << " " << na_idx << " " << va_idx << std::endl;
+//           std::cout << " " << n1 <<  "\n --- \n " << n2 << std::endl;
+//           std::cout << "._._._.\n" << v12 << "\n._._._." << std::endl;
+//           std::cout << 4*4*d_idx + 4*na_idx + va_idx << std::endl;
+//         }
 
-        result[pt_idx][4*4*d_idx + 4*na_idx + va_idx] += 1.;
-        pair_nb += 1;
+//         result[pt_idx][4*4*d_idx + 4*na_idx + va_idx] += 1.;
+//         pair_nb += 1;
 
-        if (pair_nb >= sample_pair_nb) {
-          // Break out of the two loops
-          index1 = k_indices.size();
-          index2 = k_indices.size();
-        }
-      }
-    }
+//         if (pair_nb >= sample_pair_nb) {
+//           // Break out of the two loops
+//           index1 = k_indices.size();
+//           index2 = k_indices.size();
+//         }
+//       }
+//     }
 
-    // Normalize
-    for (uint i=0; i<64; i++) {
-      result[pt_idx][i] /= pair_nb + 1e-6;
-      // result[pt_idx][i] -= 0.5;
-    }
-  }
-}
+//     // Normalize
+//     for (uint i=0; i<64; i++) {
+//       result[pt_idx][i] /= pair_nb + 1e-6;
+//       // result[pt_idx][i] -= 0.5;
+//     }
+//   }
+// }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::lEsfNodeFeatures(double** result, unsigned int feat_nb) {
+void GraphConstructor::lEsfNodeFeatures(double** result, unsigned int feat_nb) {
   uint p1_idx, p2_idx, rdn_weight;
   uint pair_nb=0;
   uint max_pair_nb;
@@ -395,28 +417,26 @@ void PointCloudGraphConstructor::lEsfNodeFeatures(double** result, unsigned int 
   double dist, a12, a12n1, a12n2, occ_r, z;
   double feat_min = -0.5;
   double feat_max =  0.5;
-  double max_dist = 0.;
+  // double max_dist = 0.;
 
-  // if (params_.mesh) {
-  //   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-  //     v1 = pc_->points[nodes_elts_[pt_idx][0]].getVector4fMap ();
-  //     for (uint i=nodes_elts_[pt_idx].size()/2; i < nodes_elts_[pt_idx].size(); i++) {
-  //       v2 = pc_->points[nodes_elts_[pt_idx][i]].getVector4fMap ();
-  //       v12 = v1-v2;
-  //       double dist = 2.*v12.norm();
-  //       if (dist > max_dist)
-  //         max_dist = dist;
-  //     }
-  //   }
-  // } else
-  //   max_dist = 2*params_.neigh_size;
-  max_dist = gridsize_;
+  // // if (params_.mesh) {
+  // //   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
+  // //     v1 = pc_->points[nodes_elts_[pt_idx][0]].getVector4fMap ();
+  // //     for (uint i=nodes_elts_[pt_idx].size()/2; i < nodes_elts_[pt_idx].size(); i++) {
+  // //       v2 = pc_->points[nodes_elts_[pt_idx][i]].getVector4fMap ();
+  // //       v12 = v1-v2;
+  // //       double dist = 2.*v12.norm();
+  // //       if (dist > max_dist)
+  // //         max_dist = dist;
+  // //     }
+  // //   }
+  // // } else
+  // //   max_dist = 2*params_.neigh_size;
+  // max_dist = gridsize_;
 
   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-    if (params_.mesh)
-      k_indices = nodes_elts_[pt_idx];
-    else
-      tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
+    k_indices = nodes_elts_[pt_idx];
+    //tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
 
     pair_nb = 0;
     max_pair_nb = k_indices.size() * (k_indices.size() - 1) / 2;
@@ -509,17 +529,15 @@ void PointCloudGraphConstructor::lEsfNodeFeatures(double** result, unsigned int 
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_nb) {
-  pcl::PointXYZINormal p;
+void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_nb) {
+  PointT p;
   std::vector< int > k_indices;
   std::vector< float > k_sqr_distances;
   const uint sample_neigh_nb = feat_nb;
 
   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-    if (params_.mesh)
-      k_indices = nodes_elts_[pt_idx];
-    else
-      tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
+    k_indices = nodes_elts_[pt_idx];
+    // tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
 
     for (uint index1=0; index1 < k_indices.size(); index1++) {
       if (index1 >= sample_neigh_nb)
@@ -542,7 +560,7 @@ void PointCloudGraphConstructor::coordsSetNodeFeatures(double** result, unsigned
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void PointCloudGraphConstructor::viz(double* adj_mat, bool viz_small_spheres) {
+void GraphConstructor::viz(double* adj_mat, bool viz_small_spheres) {
   boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
   viewer->setBackgroundColor (0, 0, 0);
   viewer->addCoordinateSystem (1., "coords", 0);
@@ -550,17 +568,17 @@ void PointCloudGraphConstructor::viz(double* adj_mat, bool viz_small_spheres) {
   for (uint i=0; i<sampled_indices_.size(); i++) {
     int idx = sampled_indices_[i];
 
-    pcl::PointXYZINormal p1 = pc_->points[idx];
-    pcl::PointXYZINormal p2_n = pc_->points[idx];
+    PointT p1 = pc_->points[idx];
+    PointT p2_n = pc_->points[idx];
     p2_n.x -= 5*p2_n.normal_x;
     p2_n.y -= 5*p2_n.normal_y;
     p2_n.z -= 5*p2_n.normal_z;
 
-    pcl::PointXYZINormal p2_u = pc_->points[idx];
+    PointT p2_u = pc_->points[idx];
     p2_u.x -= 5*p2_u.normal_x;
     p2_u.y -= 5*p2_u.normal_y;
 
-    pcl::PointXYZINormal p2_z = pc_->points[idx];
+    PointT p2_z = pc_->points[idx];
     p2_z.z += 5*1.;
 
     // viewer->addArrow (p2_n, p1, 1., 1., 1., false, "arrow_n" + std::to_string(i));
@@ -568,20 +586,20 @@ void PointCloudGraphConstructor::viz(double* adj_mat, bool viz_small_spheres) {
     // viewer->addArrow (p2_z, p1, 1., 0., 1., false, "arrow_z" + std::to_string(i));
 
     if (viz_small_spheres)
-      viewer->addSphere<pcl::PointXYZINormal>(pc_->points[idx], 0.05, 1., 0., 0., "sphere_" +std::to_string(idx));
-    else
-      viewer->addSphere<pcl::PointXYZINormal>(pc_->points[idx], params_.neigh_size, 1., 0., 0., "sphere_" +std::to_string(idx));
+      viewer->addSphere<PointT>(pc_->points[idx], 0.05, 1., 0., 0., "sphere_" +std::to_string(idx));
+    // else
+    //   viewer->addSphere<PointT>(pc_->points[idx], params_.neigh_size, 1., 0., 0., "sphere_" +std::to_string(idx));
 
     for (uint i2=0; i2<nodes_nb_; i2++) {
       if (adj_mat[nodes_nb_*i + i2] > 0.) {
         int idx2 = sampled_indices_[i2];
         if (idx != idx2)
-          viewer->addLine<pcl::PointXYZINormal>(pc_->points[idx], pc_->points[idx2], 1., 1., 0., "line_" +std::to_string(idx)+std::to_string(idx2));
+          viewer->addLine<PointT>(pc_->points[idx], pc_->points[idx2], 1., 1., 0., "line_" +std::to_string(idx)+std::to_string(idx2));
       }
     }
   }
 
-  viewer->addPointCloud<pcl::PointXYZINormal> (pc_, "cloud");
+  viewer->addPointCloud<PointT> (pc_, "cloud");
   while (!viewer->wasStopped()) {
     viewer->spinOnce(100);
   }

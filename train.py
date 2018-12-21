@@ -1,22 +1,20 @@
 import argparse
+from dataset import get_dataset, DATASETS
 import os
 import tensorflow as tf
 from tensorflow.contrib.metrics import streaming_mean
 
-from dataset import get_dataset, DATASETS
 from preprocessing import get_graph_preprocessing_fn
-from models.EFA_CoolPool import Model, MODEL_NAME
+from models import get_model, MODELS
 from progress.bar import Bar
 from utils.logger import log, logd, set_log_level, TimeScope
 from utils.params import params as p
 
 
-# === MODEL AND DATASET PRE-SETUP =============================================
-DATASET = DATASETS.ModelNet40
-Dataset, CLASS_DICT = get_dataset(DATASET)
-
-
 # === PARAMETERS ==============================================================
+p.define("dataset", DATASETS.ModelNet40.name)
+p.define("num_classes", 40)
+p.define("model", MODELS.EFA_CoolPool.name)
 # Training parameters
 p.define("max_epochs", 500)
 p.define("batch_size", 32)
@@ -28,11 +26,9 @@ p.define("val_set_pct", 0.1)
 
 # Generic
 set_log_level("INFO")
-p.define("num_classes", len(CLASS_DICT))
 
-DEFAULT_PARAMS_FILE = "params/{}_{}.yaml".format(DATASET.name, MODEL_NAME)
-# -----------------------------------------------------------------------------
-
+DEFAULT_PARAMS_FILE = "params/{}_{}.yaml".format(p.dataset,
+                                                 p.model)
 
 if __name__ == "__main__":
     # === SETUP ===============================================================
@@ -40,20 +36,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("Test a given model on a given dataset")
     parser.add_argument("--params", type=str, help="params file to load",
                         default=DEFAULT_PARAMS_FILE)
-    parser.add_argument("--dataset", type=str, help="Dataset to train on")
     args = parser.parse_args()
-
     p.load(args.params)
-    if args.dataset:
-        DATASET = DATASETS[args.dataset]
-        Dataset, CLASS_DICT = get_dataset(DATASET)
-        p.num_classes = len(CLASS_DICT)
+
+    Dataset, CLASS_DICT = get_dataset(p.dataset)
+    Model = get_model(p.model)
+
+    p.num_classes = len(CLASS_DICT)
 
     EXPERIMENT_VERSION = p.get_hash()
-    SAVE_DIR = "output_save/{}_{}_{}/".format(DATASET.name,
-                                              MODEL_NAME,
+    SAVE_DIR = "output_save/{}_{}_{}/".format(p.dataset,
+                                              p.model,
                                               EXPERIMENT_VERSION)
     os.system("mkdir -p " + SAVE_DIR)
+    p.define("exp_id", EXPERIMENT_VERSION)
+    p.save(SAVE_DIR + "params.yaml")
 
     # --- Clean previous experiments logs -------------------------------------
     restore = False
@@ -61,19 +58,20 @@ if __name__ == "__main__":
     if len(os.listdir(SAVE_DIR)) != 0:
         log("save dir: {}\n", SAVE_DIR)
         if raw_input("A similar experiment was already saved."
-                     " Would you like to delete it ?") is 'y':
-            log("Experiment deleted !\n")
+                     " Would you like to delete it ?") in ['y', 'yes', 'Y']:
             os.system("rm -rf {}/*".format(SAVE_DIR))
+            log("Experiment deleted !\n")
         else:
-            log("Restoring the records, tensorboard might be screwed up\n")
-            restore = True
-            max_train_epoch_nb = sorted([int(dirname[6:])
-                                         for dirname in os.listdir(SAVE_DIR)
-                                         if dirname[:5] == "model"])[-1]
-            start_epoch = max_train_epoch_nb + 1
-            last_ckpt = "model_{}/model.ckpt".format(max_train_epoch_nb)
-
-    p.save(SAVE_DIR + "params.yaml")
+            epochs_nb_found = sorted([int(dirname[6:])
+                                      for dirname in os.listdir(SAVE_DIR)
+                                      if dirname[:5] == "model"])
+            if len(epochs_nb_found) != 0:
+                log("Restoring the records, tensorboard might be screwed up\n")
+                restore = True
+                start_epoch = epochs_nb_found[-1] + 1
+                last_ckpt = "model_{}/model.ckpt".format(epochs_nb_found[-1])
+            else:
+                log("Failed to find a trained model to restore\n")
 
     with TimeScope("setup", debug_only=True):
         # --- Pre processing function setup -----------------------------------
@@ -81,7 +79,7 @@ if __name__ == "__main__":
         # --- Dataset setup ---------------------------------------------------
         regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
             else "/*_full_wnormals_wattention.pcd"
-        pbalance_train_set = False if DATASET == DATASETS.ScanNet \
+        pbalance_train_set = False if p.dataset == DATASETS.ScanNet \
             else True
         dataset = Dataset(batch_size=p.batch_size,
                           balance_train_set=pbalance_train_set,

@@ -13,8 +13,8 @@
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 double scale_points_unit_sphere (pcl::PointCloud<pcl::PointXYZINormal> &pc,
-                               float scalefactor,
-                               Eigen::Vector4f& centroid) {
+                               float scalefactor) {
+  Eigen::Vector4f centroid;
   pcl::compute3DCentroid (pc, centroid);
   pcl::demeanPointCloud (pc, centroid, pc);
 
@@ -137,8 +137,8 @@ void augment_data(pcl::PointCloud<pcl::PointXYZINormal>::Ptr pc,
       std::cout << "Noise std: " << standard_deviation << std::endl;
 
     // Scale to unit sphere
-    Eigen::Vector4f xyz_centroid;
-    scale_points_unit_sphere (*pc, static_cast<float>(gridsize/2), xyz_centroid);
+    // Eigen::Vector4f xyz_centroid;
+    scale_points_unit_sphere (*pc, static_cast<float>(gridsize/2));
   }
 
   if (params.rotation_deg > 0) {

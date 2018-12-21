@@ -1,19 +1,30 @@
+from enum import Enum
 from functools import partial
 import numpy as np
 
 from utils.params import params as p
-from py_graph_construction import PyPCGraph  # get_graph, get_graph_nd
+from py_graph_construction import PyGraph  # get_graph, get_graph_nd
+
+
+VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF")
+EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z")
 
 
 # Graph structure
 p.define("nodes_nb", 128)
-p.define("feat_nb", 4)
-p.define("edge_feat_nb", 5)
-p.define("neigh_size", 0.15)
 p.define("neigh_nb", 5)
+
+# Vertices
+p.define("feat_type", VERTEX_FEAT.L_ESF.name)
+p.define("feat_nb", 800)
+
+# Edges
+p.define("edge_feat_type", EDGE_FEAT.ROT_Z.name)
+p.define("edge_feat_nb", 3)
+
+p.define("neigh_size", 0.15)
 p.define("gridsize", 64)
 p.define("feats_3d", True)
-p.define("edge_feats", False)
 p.define("mesh", False)
 # p.define("scale", False)
 p.define("min_angle_z_normal", 0)
@@ -94,13 +105,19 @@ def preprocess_lesf(feats):
 
 #     return feats, adj, edge_feats, valid_indices
 
-def graph_preprocess_new(fn, p):
-    gc = PyPCGraph(fn)
-    gc.initialize()
-    gc.sample_points()
-    adj_mat = gc.adjacency_occupancy(4)
-    edge_feats = gc.edge_features_rot_z()
-    node_feats = gc.node_features_l_esf(800)
+def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
+    gc = PyGraph(fn, nodes_nb=p.nodes_nb, debug=p.debug, gridsize=p.gridsize)
+    # gc.initialize()
+    # gc.sample_points(p.min_angle_z_normal)
+    gc.initialize_point_cloud(p.min_angle_z_normal, p.neigh_size)
+    adj_mat = gc.adjacency_occupancy(p.neigh_nb)
+
+    if p.edge_feat_type == edge_feat.ROT_Z.name:
+        edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)
+
+    if p.feat_type == vertex_feat.L_ESF.name:
+        node_feats = gc.node_features_l_esf(p.feat_nb)
+
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()
 
@@ -109,7 +126,23 @@ def graph_preprocess_new(fn, p):
 
 def get_graph_preprocessing_fn(p):
 
-    return partial(graph_preprocess_new, p=p)
+    edge_feat_names = [f.name for f in EDGE_FEAT]
+    vertex_feat_names = [f.name for f in VERTEX_FEAT]
+
+    try:
+        assert p.edge_feat_type in edge_feat_names
+    except AssertionError:
+        raise Exception("This edge feature type does not exist !"
+                        " Check the spelling of 'edge_feat_type' parameter")
+
+    try:
+        assert p.feat_type in vertex_feat_names
+    except AssertionError:
+        raise Exception("This (vertex) feature type does not exist !"
+                        " Check the spelling of 'feat_type' parameter")
+
+    return partial(graph_preprocess_new, p=p,
+                   edge_feat=EDGE_FEAT, vertex_feat=VERTEX_FEAT)
     # if p.feats_3d:
     #     if p.feat_nb == 4:
     #         return partial(graph_preprocess_3d, p=p,

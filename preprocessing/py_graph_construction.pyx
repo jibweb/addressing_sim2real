@@ -7,27 +7,27 @@ import numpy as np
 cimport numpy as np
 
 
-cdef extern from "point_cloud_graph_construction.cpp":
+cdef extern from "graph_construction.cpp":
     pass
 
 # Decalre the class with cdef
-cdef extern from "point_cloud_graph_construction.h":
+cdef extern from "graph_construction.h":
     ctypedef struct Parameters:
         # Graph structure
         # unsigned int nodes_nb
         # unsigned int feat_nb
         # unsigned int edge_feat_nb
-        float min_angle_z_normal
-        float neigh_size
-        int neigh_nb
+        # float min_angle_z_normal
+        # float neigh_size
+        # int neigh_nb
         # bint feats_3d
         # bint edge_feats
-        bint mesh
+        # bint mesh
         bint scale
         # General
-        unsigned int gridsize
+        # unsigned int gridsize
         # bint viz
-        bint viz_small_spheres
+        # bint viz_small_spheres
         # bint debug
         # PC transformations
         float to_remove
@@ -35,15 +35,15 @@ cdef extern from "point_cloud_graph_construction.h":
         float occl_pct
         float noise_std
         unsigned int rotation_deg
-    cdef cppclass PointCloudGraphConstructor:
-        PointCloudGraphConstructor(string filename, Parameters,
-                                   unsigned int gridsize,
-                                   unsigned int nodes_nb,
-                                   bool debug) except +
+    cdef cppclass GraphConstructor:
+        GraphConstructor(string filename, Parameters,
+                         unsigned int gridsize,
+                         unsigned int nodes_nb,
+                         bool debug) except +
 
         # General
-        void initialize()
-        void samplePoints()
+        # void initialize()
+        void initializePointCloud(float min_angle_z_normal, float neigh_size)
         void correctAdjacencyForValidity(double* adj_mat)
         void getValidIndices(int* valid_indices)
         void viz(double* adj_mat, bool)
@@ -57,30 +57,25 @@ cdef extern from "point_cloud_graph_construction.h":
 
         # Edge features
         void coordsEdgeFeatures(double* edge_feats)
-        void rotZEdgeFeatures(double* edge_feats)
+        void rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal)
 
 
-cdef class PyPCGraph:
-    cdef PointCloudGraphConstructor*c_graph  # Hold a C++ instance which we're wrapping
+cdef class PyGraph:
+    cdef GraphConstructor*c_graph  # Hold a C++ instance which we're wrapping
     cdef unsigned int nodes_nb
 
-    def __cinit__(self, string fn):
+    def __cinit__(self, string fn, nodes_nb=16, debug=True, gridsize=64):
         cdef Parameters params
-        nodes_nb = 16
         # params.feat_nb = 800
         # params.edge_feat_nb = 3
-        params.min_angle_z_normal = 10
-        params.neigh_size = 0.401
+        # params.min_angle_z_normal = 10
+        # params.neigh_size = 0.401
         # params.neigh_nb = 4
         # params.feats_3d = True
         # params.edge_feats = True
-        params.mesh = False
-
-        gridsize = 64
+        # params.mesh = False
         # params.viz = False
         # params.viz_small_spheres = True
-        debug = False
-
         params.to_remove = 0.
         params.to_keep = 20000
         params.occl_pct = 0.
@@ -88,13 +83,13 @@ cdef class PyPCGraph:
         params.rotation_deg = 0
 
         self.nodes_nb = nodes_nb
-        self.c_graph = new PointCloudGraphConstructor(fn, params, gridsize, nodes_nb, debug)
+        self.c_graph = new GraphConstructor(fn, params, gridsize, nodes_nb, debug)
 
-    def initialize(self):
-        self.c_graph.initialize()
+    def initialize_point_cloud(self, float min_angle_z_normal, float neigh_size):
+        self.c_graph.initializePointCloud(min_angle_z_normal, neigh_size)
 
-    def sample_points(self):
-        self.c_graph.samplePoints()
+    # def sample_points(self, float min_angle_z_normal):
+    #     self.c_graph.samplePoints(min_angle_z_normal)
 
     def correct_adjacency_for_validity(self, np.ndarray[np.float64_t, ndim=2] adj_mat):
         self.c_graph.correctAdjacencyForValidity(&adj_mat[0, 0])
@@ -145,14 +140,14 @@ cdef class PyPCGraph:
         self.c_graph.coordsEdgeFeatures(&edge_feats_mat[0, 0, 0])
         return edge_feats_mat
 
-    def edge_features_rot_z(self):
+    def edge_features_rot_z(self, float min_angle_z_normal):
         """
         """
         cdef np.ndarray[double, ndim=3, mode="c"] edge_feats_mat = np.zeros([self.nodes_nb,
                                                                              self.nodes_nb,
                                                                              3],
                                                                             dtype=np.float64)
-        self.c_graph.rotZEdgeFeatures(&edge_feats_mat[0, 0, 0])
+        self.c_graph.rotZEdgeFeatures(&edge_feats_mat[0, 0, 0], min_angle_z_normal)
         return edge_feats_mat
 
     def __dealloc__(self):
