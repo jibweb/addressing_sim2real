@@ -127,7 +127,7 @@ if __name__ == "__main__":
 
         # --- Summaries and saver setup ---------------------------------------
         merged = tf.summary.merge_all()
-        saver = tf.train.Saver()
+        saver = tf.train.Saver(max_to_keep=20)
 
     # === GRAPH COMPUTATION ===================================================
     with tf.Session() as sess:
