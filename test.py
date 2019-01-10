@@ -2,11 +2,12 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import sys
 import tensorflow as tf
 
-from dataset import get_dataset, DATASETS
+from dataset import get_dataset
+from models import get_model
 from preprocessing import get_graph_preprocessing_fn
-from train import Model, MODEL_NAME, DATASET, DEFAULT_PARAMS_FILE
 from utils.logger import log, set_log_level, TimeScope
 from utils.params import params as p
 from utils.viz import plot_confusion_matrix
@@ -15,47 +16,55 @@ from utils.viz import plot_confusion_matrix
 # Generic
 set_log_level("INFO")
 TEST_REPEAT = 3
-MODEL_CKPT = "model_960/model.ckpt"
 
 
 if __name__ == "__main__":
     # === SETUP ===============================================================
     # --- Parse arguments for specific params file ----------------------------
     parser = argparse.ArgumentParser("Test a given model on a given dataset")
-    parser.add_argument("--params", type=str, help="params file to load",
-                        default=DEFAULT_PARAMS_FILE)
-    parser.add_argument("--dataset", type=str, help="Dataset to train on")
+    parser.add_argument("-f", "--exp_folder", help="Choose experiment folder")
+    parser.add_argument("-c", "--model_ckpt", help="Choose model checkpoint")
+    parser.add_argument("-v", "--viz", action="store_true",
+                        help="Show Confusion Matrix")
     args = parser.parse_args()
 
-    p.load(args.params)
-    if args.dataset:
-        DATASET = DATASETS[args.dataset]
-        Dataset, CLASS_DICT = get_dataset(DATASET)
-        p.num_classes = len(CLASS_DICT)
-
-    EXPERIMENT_VERSION = p.get_hash()
-    SAVE_DIR = "output_save/{}_{}_{}/".format(DATASET.name,
-                                              MODEL_NAME,
-                                              EXPERIMENT_VERSION)
+    if args.exp_folder:
+        SAVE_DIR = "output_save/" + args.exp_folder + "/"
+    else:
+        with open(".experiment_history") as fp:
+            exp_folders = fp.readlines()
+            # exp_folders = [exp.strip() for exp in exp_folders]
+        SAVE_DIR = "output_save/" + exp_folders[-1].strip() + "/"
 
     os.system("rm -rf {}test_tb/*".format(SAVE_DIR))
-    p.load("params/{}_{}.yaml".format(DATASET.name, MODEL_NAME))
+    p.define_from_file("{}/params.yaml".format(SAVE_DIR))
     # p.rotation_deg = 180
+
+    if args.model_ckpt:
+        MODEL_CKPT = "model_{}/model.ckpt".format(args.model_ckpt)
+    else:
+        epochs_nb_found = sorted([int(dirname[6:])
+                                  for dirname in os.listdir(SAVE_DIR)
+                                  if dirname[:5] == "model"])
+        if len(epochs_nb_found) != 0:
+            MODEL_CKPT = "model_{0}/model.ckpt-{0}".format(epochs_nb_found[-1])
+        else:
+            log("Failed to find a trained model to restore\n")
+            sys.exit()
 
     # --- Pre processing function setup ---------------------------------------
     feat_compute = get_graph_preprocessing_fn(p)
 
     # --- Dataset setup -------------------------------------------------------
-    Dataset, CLASS_DICT = get_dataset(DATASET)
+    Dataset, CLASS_DICT = get_dataset(p.dataset)
     regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
             else "/*_full_wnormals_wattention.pcd"
     dataset = Dataset(batch_size=p.batch_size,
                       val_set_pct=p.val_set_pct,
                       regex=regex)
 
-    print p
-
     # --- Model Setup ---------------------------------------------------------
+    Model = get_model(p.model)
     model = Model()
 
     # --- Accuracy setup ------------------------------------------------------
@@ -106,15 +115,20 @@ if __name__ == "__main__":
                 total_acc = (test_iter*total_acc + acc) / (test_iter + 1)
                 total_cm += cm
 
-                log("Accurracy: {:.1f} / {:.1f} (loss: {:.3f})\n",
+                log("Accurracy: {:.1f} / {:.1f} (loss: {:.3f})",
                     100.*total_acc,
                     100.*acc,
                     loss)
 
                 test_iter += 1
+        print ""
+        confmat_filename = "{}conf_matrix_{}".format(SAVE_DIR,
+                                                     MODEL_CKPT.split("/")[0])
+        np.save(confmat_filename, total_cm)
 
-        plot_confusion_matrix(total_cm, sorted(CLASS_DICT.keys()),
-                              normalize=True)
-        plt.show()
+        if args.viz:
+            plot_confusion_matrix(total_cm, sorted(CLASS_DICT.keys()),
+                                  normalize=True)
+            plt.show()
 
         print total_cm

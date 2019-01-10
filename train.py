@@ -45,14 +45,13 @@ if __name__ == "__main__":
     p.num_classes = len(CLASS_DICT)
 
     EXPERIMENT_VERSION = p.get_hash()
-    SAVE_DIR = "output_save/{}_{}_{}/".format(p.dataset,
-                                              p.model,
-                                              EXPERIMENT_VERSION)
+    EXP_FOLDER = "{}_{}_{}".format(p.dataset,
+                                   p.model,
+                                   EXPERIMENT_VERSION)
+    SAVE_DIR = "output_save/{}/".format(EXP_FOLDER)
     os.system("mkdir -p " + SAVE_DIR)
-    p.define("exp_id", EXPERIMENT_VERSION)
-    p.save(SAVE_DIR + "params.yaml")
 
-    # --- Clean previous experiments logs -------------------------------------
+    # --- Clean/Restore previous experiments logs -----------------------------
     restore = False
     start_epoch = 1
     if len(os.listdir(SAVE_DIR)) != 0:
@@ -69,9 +68,23 @@ if __name__ == "__main__":
                 log("Restoring the records, tensorboard might be screwed up\n")
                 restore = True
                 start_epoch = epochs_nb_found[-1] + 1
-                last_ckpt = "model_{}/model.ckpt".format(epochs_nb_found[-1])
+                last_ckpt = "model_{0}/model.ckpt-{0}".format(epochs_nb_found[-1])
             else:
                 log("Failed to find a trained model to restore\n")
+
+    # --- Keep track of the latest experiments and parameters -----------------
+    p.define("exp_id", EXPERIMENT_VERSION)
+    p.save(SAVE_DIR + "params.yaml")
+
+    with open(".experiment_history") as fp:
+        exp_folders = fp.readlines()
+        exp_folders = [exp.strip() for exp in exp_folders]
+
+    exp_folders.append(EXP_FOLDER)
+
+    with open(".experiment_history", "w") as fp:
+        for exp in exp_folders[-50:]:
+            fp.write(exp + "\n")
 
     with TimeScope("setup", debug_only=True):
         # --- Pre processing function setup -----------------------------------
@@ -125,11 +138,11 @@ if __name__ == "__main__":
 
         # Streaming summaries for validation set
         saccuracy, saccuracy_update = streaming_mean(accuracy)
-        with tf.variable_scope('accuracy'):
+        sloss, sloss_update = streaming_mean(model.loss)
+        with tf.variable_scope('accuracy/'):
             saccuracy_scalar = tf.summary.scalar('val_accuracy',
                                                  saccuracy)
-        sloss, sloss_update = streaming_mean(model.loss)
-        with tf.variable_scope('loss'):
+        with tf.variable_scope('loss/'):
             sloss_scalar = tf.summary.scalar('val_loss',
                                              sloss)
 
