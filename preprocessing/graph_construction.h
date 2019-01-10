@@ -1,7 +1,5 @@
 #pragma once
 
-#include <pcl/io/pcd_io.h>
-
 #include "parameters.h"
 #include "augmentation_preprocessing.cpp"
 #include "occupancy.cpp"
@@ -14,8 +12,10 @@ class GraphConstructor
 protected:
   std::string filename_;
   pcl::PointCloud<PointT>::Ptr pc_;
+  pcl::PolygonMesh::Ptr mesh_;
   pcl::search::KdTree<PointT>::Ptr tree_;
   std::vector<std::vector<int> > nodes_elts_;
+  std::vector<std::vector<int> > adj_list_;
   std::vector<int> sampled_indices_;
   std::vector<bool> valid_indices_;
   std::vector<std::vector<std::vector<int> > > lut_;
@@ -36,6 +36,7 @@ public:
                    bool debug) :
     filename_(filename),
     pc_(new pcl::PointCloud<PointT>),
+    mesh_(new pcl::PolygonMesh),
     tree_(new pcl::search::KdTree<PointT>),
     gridsize_(gridsize),
     nodes_nb_(nodes_nb),
@@ -50,45 +51,14 @@ public:
 
     }
 
-  // void initialize() {
-  //   ScopeTime t("Initialization (PointCloudGraphConstructor)", debug_);
-
-  //   // Read the point cloud
-  //   if (pcl::io::loadPCDFile<PointT> (filename_.c_str(), *pc_) == -1) {
-  //     PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
-  //     return;
-  //   }
-
-  //   // Data augmentation
-  //   // Eigen::Vector4f centroid;
-  //   scale_ = scale_points_unit_sphere (*pc_, gridsize_/2);
-  //   params_.neigh_size = params_.neigh_size * gridsize_/2;
-  //   augment_data(pc_, params_, gridsize_, debug_);
-
-  //   if (params_.scale && debug_)
-  //     std::cout << "Scale: " << scale_ << std::endl;
-
-  //   // Initialize the tree
-  //   tree_->setInputCloud (pc_);
-
-  //   // Prepare the voxel grid
-  //   lut_.resize (gridsize_);
-  //   for (uint i = 0; i < gridsize_; ++i) {
-  //       lut_[i].resize (gridsize_);
-  //       for (uint j = 0; j < gridsize_; ++j)
-  //         lut_[i][j].resize (gridsize_);
-  //   }
-
-  //   voxelize (*pc_, lut_, gridsize_);
-  // };
-
   // General
   void initializePointCloud(float min_angle_z_normal, float neigh_size);
+  void initializeMesh(float min_angle_z_normal, double* adj_mat, unsigned int neigh_nb);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
   void viz(double* adj_mat, bool viz_small_spheres);
 
-  // node features
+  // Node features
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);
   // void esf3dNodeFeatures(double** result);
   void coordsSetNodeFeatures(double** result, unsigned int feat_nb);

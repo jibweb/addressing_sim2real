@@ -5,6 +5,8 @@
 #include <pcl/features/fpfh.h>
 #include <pcl/features/shot.h>
 #include <pcl/features/shot_lrf.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/io/ply_io.h>
 #include <pcl/point_types.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
@@ -14,7 +16,7 @@
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////// SAMPLING //////////////////////////////////////////////////////////
+////////////////////////////////////////////// GENERAL ///////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -49,7 +51,7 @@ void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neig
 
   voxelize (*pc_, lut_, gridsize_);
 
-  ////////////////////////////
+  // --- Setup for the sampling -----------------------------------------------
   sampled_indices_.clear();
   sampled_indices_.reserve(nodes_nb_);
   // Prepare the values for the sampling procedure
@@ -60,7 +62,7 @@ void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neig
   int total_weight = pc_->points.size();
   std::vector<bool> probs(pc_->points.size(), true);
 
-  ////////////////////////////
+  // --- Remove nodes too close to the z vector -------------------------------
   if (min_angle_z_normal > 0.) {
     Eigen::Vector3f z(0., 0., 1.);
     z.normalize();
@@ -74,8 +76,8 @@ void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neig
       }
     }
   }
-  ////////////////////////////
 
+  // --- Sampling Procedure ---------------------------------------------------
   for (uint pt_idx=0; pt_idx < nodes_nb_; pt_idx++) {
     // Sample a new point
     if (total_weight > 0) {
@@ -117,10 +119,6 @@ void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neig
       tree_->radiusSearch(pc_->points[index], neigh_size, k_indices, k_sqr_distances);
       nodes_elts_.push_back(k_indices);
 
-      // std::cout << "For node " << sampled_indices_.size()
-      //           << " aka nodes_elts_ nb: " << nodes_elts_.size()
-      //           << " we have nb neighbors: " << k_indices.size() << std::endl;
-
       // Update the sampling probability
       for (uint i=0; i < k_indices.size(); i++) {
         if (probs[k_indices[i]])
@@ -142,6 +140,159 @@ void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neig
 
   if (debug_)
     std::cout << "Sampled points: " << sampled_indices_.size() << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat, unsigned int neigh_nb) {
+
+  ScopeTime t("Initialization (MeshGraphConstructor)", debug_);
+
+  // Read the point cloud
+  if (pcl::io::loadPLYFile(filename_.c_str(), *mesh_) == -1) {
+    PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
+    return;
+  }
+
+
+  std::string pc_filename = filename_.substr(0, filename_.size() - 4) + ".pcd";
+  // Read the point cloud
+  if (pcl::io::loadPCDFile<pcl::PointXYZINormal> (pc_filename.c_str(), *pc_) == -1) {
+    PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
+    return;
+  }
+
+
+  if (debug_) {
+    std::cout << "PolygonMesh: " << mesh_->polygons.size() << " triangles" << std::endl;
+    std::cout << "PC size: " << pc_->points.size() << std::endl;
+  }
+
+  // Data augmentation
+  // Eigen::Vector4f centroid;
+  // scale_points_unit_sphere (*pc_, gridsize_/2, centroid);
+  // params_.neigh_size = params_.neigh_size * gridsize_/2;
+  // augment_data(pc_, params_);
+
+  // Initialize the tree
+  tree_->setInputCloud (pc_);
+
+  nodes_elts_.resize(nodes_nb_);
+  for (uint i=0; i < nodes_elts_.size(); i++)
+    nodes_elts_[i].reserve(neigh_nb);
+
+
+  // Allocate space for the adjacency list
+  adj_list_.resize(pc_->points.size());
+  for (uint i=0; i < adj_list_.size(); i++)
+    adj_list_[i].reserve(16);
+
+
+  // TODO Remove nodes with a wrong angle_z_normal
+
+  // Fill in the adjacency list
+  for (uint t=0; t < mesh_->polygons.size(); t++) {
+    pcl::Vertices& triangle = mesh_->polygons[t];
+
+    adj_list_[triangle.vertices[0]].push_back(triangle.vertices[1]);
+    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[0]);
+
+    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[2]);
+    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[1]);
+
+    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[0]);
+    adj_list_[triangle.vertices[0]].push_back(triangle.vertices[2]);
+  }
+
+
+
+  // Initialize the valid indices
+  valid_indices_.resize(nodes_nb_);
+  // for (uint i=0; i<nodes_nb_; i++)
+  //   valid_indices_.push_back(false);
+
+
+  // Prepare the voxel grid
+  lut_.resize (gridsize_);
+  for (uint i = 0; i < gridsize_; ++i) {
+      lut_[i].resize (gridsize_);
+      for (uint j = 0; j < gridsize_; ++j)
+        lut_[i][j].resize (gridsize_);
+  }
+
+  voxelize (*pc_, lut_, gridsize_);
+
+  // --- BFS SAMPLING AND ADJACENCY -------------------------------------------
+  // --- Global setup for the sampling procedure ------------------------------
+  srand (static_cast<unsigned int> (time (0)));
+  std::vector<bool> visited(pc_->points.size(), false);
+  uint nb_visited = 0;
+  std::vector<std::vector<int> > neighborhood(pc_->points.size());
+
+  for (uint node_idx=0; node_idx < nodes_elts_.size(); node_idx++) {
+    // --- Setup for BFS ------------------------------------------------------
+    std::vector<bool> visited_local(pc_->points.size());
+    uint nb_visited_local = 0;
+    std::deque<int> queue;
+
+    if (nb_visited == pc_->points.size())
+      break;
+
+    // --- Select a node and enqueue it ---------------------------------------
+    int rdn_idx;
+    do {
+      rdn_idx = rand() % pc_->points.size();
+    } while (visited[rdn_idx]);
+
+    if (!visited[rdn_idx])
+      nb_visited++;
+
+    visited[rdn_idx] = true;
+    visited_local[rdn_idx] = true;
+    neighborhood[rdn_idx].push_back(node_idx);
+    queue.push_back(rdn_idx);
+    sampled_indices_.push_back(rdn_idx);
+
+
+    // --- BFS over the graph to extract the neighborhood ---------------------
+    while(!queue.empty() && nb_visited_local < neigh_nb)
+    {
+      // Dequeue a vertex from queue and print it
+      int s = queue.front();
+      queue.pop_front();
+      nb_visited_local++;
+      if (nb_visited_local < neigh_nb/2)
+        nodes_elts_[node_idx].push_back(s);
+
+      int nb_pt_idx;
+      for (uint nb_idx=0; nb_idx < adj_list_[s].size(); nb_idx++) {
+        nb_pt_idx = adj_list_[s][nb_idx];
+        if (!visited[nb_pt_idx])
+          nb_visited++;
+
+        if (!visited_local[nb_pt_idx]) {
+          visited[nb_pt_idx] = true;
+          visited_local[nb_pt_idx] = true;
+
+          // Fill in the adjacency matrix
+          for (uint i=0; i < neighborhood[nb_pt_idx].size(); i++) {
+            int node_idx2 = neighborhood[nb_pt_idx][i];
+            adj_mat[node_idx*nodes_nb_ + node_idx2] = true;
+            adj_mat[node_idx2*nodes_nb_ + node_idx] = true;
+          }
+          neighborhood[nb_pt_idx].push_back(node_idx);
+
+          queue.push_back(nb_pt_idx);
+        }
+      }
+    } // while queue not empty
+  } // for each node
+
+
+  // Update the valid indices vector
+  for (uint i=0; i < sampled_indices_.size(); i++) {
+    valid_indices_[i] = true;
+    adj_mat[i*nodes_nb_ + i] = true;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -301,108 +452,6 @@ void GraphConstructor::rotZEdgeFeatures(double* edge_feats, float min_angle_z_no
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////// NODE FEATURES ///////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// void GraphConstructor::esf3dNodeFeatures(double** result) {
-//   uint p1_idx, p2_idx, rdn_weight;
-//   float pair_nb=0.;
-//   uint max_pair_nb;
-//   const int sample_pair_nb = 1000;
-//   std::vector< int > k_indices;
-//   std::vector< float > k_sqr_distances;
-//   Eigen::Vector4f v1, v2, n1, n2, v12;
-//   double dist, na, va;
-//   uint d_idx, na_idx, va_idx;
-//   float max_dist = 0.;
-//   if (params_.mesh) {
-//     for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-//       v1 = pc_->points[nodes_elts_[pt_idx][0]].getVector4fMap ();
-//       for (uint i=nodes_elts_[pt_idx].size()/2; i < nodes_elts_[pt_idx].size(); i++) {
-//         v2 = pc_->points[nodes_elts_[pt_idx][i]].getVector4fMap ();
-//         v12 = v1-v2;
-//         float dist = 2.*v12.norm();
-//         if (dist > max_dist)
-//           max_dist = dist;
-//       }
-//     }
-//   } else
-//     max_dist = 2*params_.neigh_size;
-
-//   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-//     k_indices = nodes_elts_[pt_idx];
-//     // tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
-
-//     pair_nb = 0.;
-//     max_pair_nb = k_indices.size() * (k_indices.size() - 1) / 2;
-
-//     if (max_pair_nb < sample_pair_nb / 2) {
-//       if (debug_)
-//         std::cout << "Node " << pt_idx << " max pair nb: " << max_pair_nb << std::endl;
-
-//       valid_indices_[pt_idx] = false;
-//     }
-
-//     for (uint index1=0; index1 < k_indices.size(); index1++) {
-//       for (uint index2=index1+1; index2 < k_indices.size(); index2++) {
-//         if (max_pair_nb < 10*sample_pair_nb) {
-//           rdn_weight = rand() % max_pair_nb;
-//           if (rdn_weight > sample_pair_nb)
-//             continue;
-
-//           p1_idx = k_indices[index1];
-//           p2_idx = k_indices[index2];
-//         } else {
-//           rdn_weight = rand() % k_indices.size();
-//           p1_idx = k_indices[rdn_weight];
-//           rdn_weight = rand() % k_indices.size();
-//           p2_idx = k_indices[rdn_weight];
-//         }
-
-//         if (std::isnan(pc_->points[p1_idx].normal_x) || std::isnan(pc_->points[p2_idx].normal_x))
-//           continue;
-
-//         // Get the vectors
-//         v1 = pc_->points[p1_idx].getVector4fMap ();
-//         v2 = pc_->points[p2_idx].getVector4fMap ();
-//         n1 = pc_->points[p1_idx].getNormalVector4fMap ();
-//         n2 = pc_->points[p2_idx].getNormalVector4fMap ();
-
-//         v12 = v1 - v2;
-
-//         // Get the indices
-//         dist = ceil(4*(v12.norm() / max_dist)) - 1;
-//         d_idx = static_cast<uint>(std::min(std::max(dist, 0.), 3.));
-//         na = ceil(2*(n1.dot(n2) + 1)) - 1;
-//         na_idx = static_cast<uint>(std::min(std::max(na, 0.), 3.));
-//         v12.normalize();
-//         va = ceil(4*std::max(fabs(v12.dot(n1)), fabs(v12.dot(n2)))) - 1;
-//         va_idx = static_cast<uint>(std::min(std::max(va, 0.), 3.));
-
-//         if (na_idx > 3 || d_idx > 3 || va_idx > 3) {
-//           std::cout << d_idx << " " << na_idx << " " << va_idx << std::endl;
-//           std::cout << " " << n1 <<  "\n --- \n " << n2 << std::endl;
-//           std::cout << "._._._.\n" << v12 << "\n._._._." << std::endl;
-//           std::cout << 4*4*d_idx + 4*na_idx + va_idx << std::endl;
-//         }
-
-//         result[pt_idx][4*4*d_idx + 4*na_idx + va_idx] += 1.;
-//         pair_nb += 1;
-
-//         if (pair_nb >= sample_pair_nb) {
-//           // Break out of the two loops
-//           index1 = k_indices.size();
-//           index2 = k_indices.size();
-//         }
-//       }
-//     }
-
-//     // Normalize
-//     for (uint i=0; i<64; i++) {
-//       result[pt_idx][i] /= pair_nb + 1e-6;
-//       // result[pt_idx][i] -= 0.5;
-//     }
-//   }
-// }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -109,8 +109,11 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
     gc = PyGraph(fn, nodes_nb=p.nodes_nb, debug=p.debug, gridsize=p.gridsize)
     # gc.initialize()
     # gc.sample_points(p.min_angle_z_normal)
-    gc.initialize_point_cloud(p.min_angle_z_normal, p.neigh_size)
-    adj_mat = gc.adjacency_occupancy(p.neigh_nb)
+    if p.mesh:
+        adj_mat = gc.initialize_mesh(p.min_angle_z_normal, p.neigh_size)
+    else:
+        gc.initialize_point_cloud(p.min_angle_z_normal, p.neigh_size)
+        adj_mat = gc.adjacency_occupancy(p.neigh_nb)
 
     if p.edge_feat_type == edge_feat.ROT_Z.name:
         edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)
