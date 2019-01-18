@@ -116,9 +116,9 @@ main(int argc, char* argv[]) {
     std::ofstream groundtruth;
     groundtruth.open(track_dir + "groundtruth.txt");
 
-    /**************************************************************************
+    /*************************************************************************
     * Compute camera pose
-    **************************************************************************/
+    *************************************************************************/
     Eigen::Vector3f position = sphere_positions[sp];
     Eigen::Vector3f n_pos;
     n_pos(0) = position(0);
@@ -139,8 +139,8 @@ main(int argc, char* argv[]) {
       dmr.setCamPose(pose);
 
       Eigen::Matrix3f rotation = pose.block(0, 0, 3, 3);
-      rotation = rotation.transpose();
-      Eigen::Quaternionf q(rotation);
+      Eigen::Matrix3f rotation_t = rotation.transpose();
+      Eigen::Quaternionf q(rotation_t);
       groundtruth << std::to_string(static_cast<float>(pos_idx)) << " "
                   << real_pos(0) << " " << real_pos(1) << " " << real_pos(2) << " "
                   << q.x() << " " << q.y() << " " << q.z() << " " << q.w()
