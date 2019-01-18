@@ -48,6 +48,7 @@ cdef extern from "graph_construction.h":
         void correctAdjacencyForValidity(double* adj_mat)
         void getValidIndices(int* valid_indices)
         void viz(double* adj_mat, bool)
+        void vizMesh(double* adj_mat, bool)
 
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
@@ -110,6 +111,9 @@ cdef class PyGraph:
 
     def viz(self, np.ndarray[np.float64_t, ndim=2] adj_mat, bool viz_small_spheres=True):
         self.c_graph.viz(&adj_mat[0, 0], viz_small_spheres)
+
+    def viz_mesh(self, np.ndarray[np.float64_t, ndim=2] adj_mat, bool viz_small_spheres=True):
+        self.c_graph.vizMesh(&adj_mat[0, 0], viz_small_spheres)
 
     def node_features_l_esf(self, feat_nb):
         """
