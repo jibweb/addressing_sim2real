@@ -7,6 +7,7 @@
 
 typedef pcl::PointXYZINormal PointT;
 
+
 class GraphConstructor
 {
 protected:
@@ -15,6 +16,8 @@ protected:
   pcl::PolygonMesh::Ptr mesh_;
   pcl::search::KdTree<PointT>::Ptr tree_;
   std::vector<std::vector<int> > nodes_elts_;
+  std::vector<std::unordered_map<uint, std::vector<uint> > > node_surface_tree_;
+  std::vector<std::unordered_map<uint, uint> > node_surface_tree_depth_;
   std::vector<std::vector<int> > adj_list_;
   std::vector<int> sampled_indices_;
   std::vector<bool> valid_indices_;
@@ -57,6 +60,7 @@ public:
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
   void viz(double* adj_mat, bool viz_small_spheres);
+  void vizMesh(double* adj_mat, bool viz_small_spheres);
 
   // Node features
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);

@@ -1,7 +1,9 @@
 #include <random>
 #include <math.h>
+#include <unordered_map>
 // #include <time>
 
+#include <pcl/conversions.h>
 #include <pcl/features/fpfh.h>
 #include <pcl/features/shot.h>
 #include <pcl/features/shot_lrf.h>
@@ -12,7 +14,6 @@
 
 
 #include "graph_construction.h"
-
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -153,13 +154,15 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     return;
   }
 
+  pcl::PointCloud<pcl::PointXYZ> point_cloud;
+  pcl::fromPCLPointCloud2(mesh_->cloud, *pc_);
 
-  std::string pc_filename = filename_.substr(0, filename_.size() - 4) + ".pcd";
-  // Read the point cloud
-  if (pcl::io::loadPCDFile<pcl::PointXYZINormal> (pc_filename.c_str(), *pc_) == -1) {
-    PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
-    return;
-  }
+  // std::string pc_filename = filename_.substr(0, filename_.size() - 4) + ".pcd";
+  // // Read the point cloud
+  // if (pcl::io::loadPCDFile<pcl::PointXYZINormal> (pc_filename.c_str(), *pc_) == -1) {
+  //   PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
+  //   return;
+  // }
 
 
   if (debug_) {
@@ -194,19 +197,21 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     pcl::Vertices& triangle = mesh_->polygons[t];
 
     adj_list_[triangle.vertices[0]].push_back(triangle.vertices[1]);
-    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[0]);
-
-    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[2]);
-    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[1]);
-
-    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[0]);
     adj_list_[triangle.vertices[0]].push_back(triangle.vertices[2]);
+
+    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[0]);
+    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[2]);
+
+    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[1]);
+    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[0]);
   }
 
 
 
   // Initialize the valid indices
   valid_indices_.resize(nodes_nb_);
+  node_surface_tree_.resize(nodes_nb_);
+  node_surface_tree_depth_.resize(nodes_nb_);
   // for (uint i=0; i<nodes_nb_; i++)
   //   valid_indices_.push_back(false);
 
@@ -228,6 +233,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   uint nb_visited = 0;
   std::vector<std::vector<int> > neighborhood(pc_->points.size());
 
+  // --- Do a BFS per node in the graph ---------------------------------------
   for (uint node_idx=0; node_idx < nodes_elts_.size(); node_idx++) {
     // --- Setup for BFS ------------------------------------------------------
     std::vector<bool> visited_local(pc_->points.size());
@@ -251,6 +257,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     neighborhood[rdn_idx].push_back(node_idx);
     queue.push_back(rdn_idx);
     sampled_indices_.push_back(rdn_idx);
+    node_surface_tree_depth_[node_idx][rdn_idx] = 0;
 
 
     // --- BFS over the graph to extract the neighborhood ---------------------
@@ -270,6 +277,9 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
           nb_visited++;
 
         if (!visited_local[nb_pt_idx]) {
+
+          node_surface_tree_[node_idx][s].push_back(nb_pt_idx);
+          node_surface_tree_depth_[node_idx][nb_pt_idx] = node_surface_tree_depth_[node_idx][s] + 1;
           visited[nb_pt_idx] = true;
           visited_local[nb_pt_idx] = true;
 
@@ -652,4 +662,72 @@ void GraphConstructor::viz(double* adj_mat, bool viz_small_spheres) {
   while (!viewer->wasStopped()) {
     viewer->spinOnce(100);
   }
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
+  boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
+  viewer->setBackgroundColor (0, 0, 0);
+  viewer->addCoordinateSystem (1., "coords", 0);
+
+  for (uint i=0; i<sampled_indices_.size(); i++) {
+    int idx = sampled_indices_[i];
+
+    if (viz_small_spheres)
+      viewer->addSphere<PointT>(pc_->points[idx], 0.01, 1., 0., 0., "sphere_" +std::to_string(idx));
+    // else
+    //   viewer->addSphere<PointT>(pc_->points[idx], params_.neigh_size, 1., 0., 0., "sphere_" +std::to_string(idx));
+
+    for (uint i2=0; i2<nodes_nb_; i2++) {
+      if (adj_mat[nodes_nb_*i + i2] > 0.) {
+        int idx2 = sampled_indices_[i2];
+        if (idx != idx2)
+          viewer->addLine<PointT>(pc_->points[idx], pc_->points[idx2], 0., 0., 1., "line_" +std::to_string(idx)+std::to_string(idx2));
+      }
+    }
+  }
+
+
+
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr viz_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+  std::unordered_map<uint, std::vector<uint> > tree = node_surface_tree_[0];
+  std::unordered_map<uint, uint> tree_depth = node_surface_tree_depth_[0];
+
+  std::deque<uint> queue;
+  queue.push_back(sampled_indices_[0]);
+  float g = 0.0;
+  while(!queue.empty()) {
+    // Dequeue a vertex from queue and print it
+    uint s = queue.front();
+    queue.pop_front();
+
+    for (uint i=0; i < tree[s].size(); i++) {
+      queue.push_back(tree[s][i]);
+    }
+
+    if (tree_depth[s]>5 && tree_depth[s] < 10) {
+      pcl::PointXYZRGB p;
+      p.x = pc_->points[s].x;
+      p.y = pc_->points[s].y;
+      p.z = pc_->points[s].z;
+      p.r = 255;
+      p.g = 8*tree_depth[s]; // static_cast<int>(g);
+      p.b = 0;
+
+      viz_cloud->points.push_back(p);
+    }
+
+    g += 0.2;
+  } // while queue not empty
+
+  pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(viz_cloud);
+  // viewer->addPointCloud<pcl::PointXYZRGB> (cloud, rgb, "sample cloud");
+  viewer->addPointCloud<pcl::PointXYZRGB> (viz_cloud, rgb, "cloud");
+
+  viewer->addPolygonMesh (*mesh_);
+  while (!viewer->wasStopped()) {
+    viewer->spinOnce(100);
+  }
+
 }
