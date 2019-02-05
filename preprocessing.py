@@ -6,7 +6,7 @@ from utils.params import params as p
 from py_graph_construction import PyGraph  # get_graph, get_graph_nd
 
 
-VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF")
+VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF SPH")
 EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z")
 
 
@@ -120,6 +120,10 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
 
     if p.feat_type == vertex_feat.L_ESF.name:
         node_feats = gc.node_features_l_esf(p.feat_nb)
+    elif p.feat_type == vertex_feat.SPH.name:
+        node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
+                                          r_sdiv=p.feat_nb[1],
+                                          p_sdiv=p.feat_nb[2])
 
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()

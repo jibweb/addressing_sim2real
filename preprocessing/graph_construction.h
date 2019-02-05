@@ -1,5 +1,8 @@
 #pragma once
 
+#include <igl/boundary_loop.h>
+#include <igl/lscm.h>
+
 #include "parameters.h"
 #include "augmentation_preprocessing.cpp"
 #include "occupancy.cpp"
@@ -66,6 +69,7 @@ public:
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);
   // void esf3dNodeFeatures(double** result);
   void coordsSetNodeFeatures(double** result, unsigned int feat_nb);
+  void sphNodeFeatures(double** result, uint image_size, uint r_sdiv, uint p_sdiv);
 
   // Adjacency matrix construction method
   void fullConnectionAdjacency(double* adj_mat);

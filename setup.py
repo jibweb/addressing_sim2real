@@ -70,6 +70,8 @@ ext_args['extra_compile_args'].append("-std=c++11")
 ext_args['extra_link_args'].append("-std=c++11")
 ext_args['extra_link_args'].append('-lboost_system')
 
+ext_args['include_dirs'].append('/home/jbweibel/install/libigl/include/')
+
 for k, v in ext_args.iteritems():
     print k, ":", v
 print "\n\n"
