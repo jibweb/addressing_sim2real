@@ -1,9 +1,10 @@
 #include <random>
 #include <math.h>
 #include <unordered_map>
+#include <utility>
 // #include <time>
 
-
+#include <boost/functional/hash.hpp>
 #include <pcl/conversions.h>
 #include <pcl/features/shot_lrf.h>
 #include <pcl/io/pcd_io.h>
@@ -11,13 +12,30 @@
 #include <pcl/point_types.h>
 #include <pcl/visualization/pcl_visualizer.h>
 
+
+#include <igl/writePLY.h>
+
 #include "graph_construction.h"
 #include "bresenham.cpp"
 
+typedef std::pair<uint, uint> Edge;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////// GENERAL ///////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+float triangle_area(Eigen::Vector4f& p1, Eigen::Vector4f& p2, Eigen::Vector4f& p3) {
+  float a,b,c,s;
+
+  // Get the area of the triangle
+  Eigen::Vector4f v21 (p2 - p1);
+  Eigen::Vector4f v31 (p3 - p1);
+  Eigen::Vector4f v23 (p2 - p3);
+  a = v21.norm (); b = v31.norm (); c = v23.norm (); s = (a+b+c) * 0.5f + 1e-6;
+
+  return sqrt(s * (s-a) * (s-b) * (s-c));
+}
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neigh_size) {
@@ -143,7 +161,7 @@ void GraphConstructor::initializePointCloud(float min_angle_z_normal, float neig
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat, unsigned int neigh_nb) {
+void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size) {
 
   ScopeTime t("Initialization (MeshGraphConstructor)", debug_);
 
@@ -169,7 +187,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   }
 
   // Data augmentation
-  // Eigen::Vector4f centroid;
+  scale_points_unit_sphere (*pc_, 1.);
   // scale_points_unit_sphere (*pc_, gridsize_/2, centroid);
   // params_.neigh_size = params_.neigh_size * gridsize_/2;
   // augment_data(pc_, params_);
@@ -179,121 +197,162 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
   nodes_elts_.resize(nodes_nb_);
   for (uint i=0; i < nodes_elts_.size(); i++)
-    nodes_elts_[i].reserve(neigh_nb);
-
-
-  // Allocate space for the adjacency list
-  adj_list_.resize(pc_->points.size());
-  for (uint i=0; i < adj_list_.size(); i++)
-    adj_list_[i].reserve(16);
-
+    nodes_elts_[i].reserve(100);
 
   // TODO Remove nodes with a wrong angle_z_normal
 
-  // Fill in the adjacency list
-  for (uint t=0; t < mesh_->polygons.size(); t++) {
-    pcl::Vertices& triangle = mesh_->polygons[t];
-
-    adj_list_[triangle.vertices[0]].push_back(triangle.vertices[1]);
-    adj_list_[triangle.vertices[0]].push_back(triangle.vertices[2]);
-
-    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[0]);
-    adj_list_[triangle.vertices[1]].push_back(triangle.vertices[2]);
-
-    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[1]);
-    adj_list_[triangle.vertices[2]].push_back(triangle.vertices[0]);
-  }
-
-
-
   // Initialize the valid indices
   valid_indices_.resize(nodes_nb_);
-  node_surface_tree_.resize(nodes_nb_);
-  node_surface_tree_depth_.resize(nodes_nb_);
-  // for (uint i=0; i<nodes_nb_; i++)
-  //   valid_indices_.push_back(false);
 
 
-  // Prepare the voxel grid
-  lut_.resize (gridsize_);
-  for (uint i = 0; i < gridsize_; ++i) {
-      lut_[i].resize (gridsize_);
-      for (uint j = 0; j < gridsize_; ++j)
-        lut_[i][j].resize (gridsize_);
+
+  // --- Edge connectivity ----------------------------------------------------
+  std::unordered_map<Edge,std::vector<uint>,boost::hash<Edge> > edge_to_triangle;
+  // std::unordered_map<Edge, std::vector<uint> > edge_to_triangle;
+
+  for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+    for(uint edge_idx=0; edge_idx<3; edge_idx++) {
+      uint idx1 = mesh_->polygons[tri_idx].vertices[edge_idx];
+      uint idx2 = mesh_->polygons[tri_idx].vertices[(edge_idx+1)%3];
+
+      if (idx1 == idx2)
+        std::cout << "Two vertices of a triangle have the same index aka weird duplicates that are part of a triangle somehow" << std::endl;
+
+      if (idx1 > idx2) {
+        Edge edge_id(idx2,idx1);
+        edge_to_triangle[edge_id].push_back(tri_idx);
+      } else {
+        Edge edge_id(idx1,idx2);
+        edge_to_triangle[edge_id].push_back(tri_idx);
+      }
+    }
   }
 
-  voxelize (*pc_, lut_, gridsize_);
+  // --- Face area ------------------------------------------------------------
+  std::vector<float> face_area;
+  float total_area = 0.;
+  face_area.resize(mesh_->polygons.size());
+  for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+    Eigen::Vector4f p1 = pc_->points[mesh_->polygons[tri_idx].vertices[0]].getVector4fMap ();
+    Eigen::Vector4f p2 = pc_->points[mesh_->polygons[tri_idx].vertices[1]].getVector4fMap ();
+    Eigen::Vector4f p3 = pc_->points[mesh_->polygons[tri_idx].vertices[2]].getVector4fMap ();
+    face_area[tri_idx] = triangle_area(p1, p2, p3);
+    total_area += face_area[tri_idx];
+  }
 
-  // --- BFS SAMPLING AND ADJACENCY -------------------------------------------
+  float target_area = neigh_size; //total_area * neigh_size; // static_cast<float>(neigh_nb) / mesh_->polygons.size();
+
+  if (debug_)
+    std::cout << "Target area: " << target_area << " / Total area: " << total_area  << std::endl; //<< " / Proportion: " << neigh_size << std::endl; //static_cast<float>(neigh_nb) / mesh_->polygons.size() << std::endl;
+
+  // --- BFS surface sampling (area dependent) --------------------------------
   // --- Global setup for the sampling procedure ------------------------------
   srand (static_cast<unsigned int> (time (0)));
-  std::vector<bool> visited(pc_->points.size(), false);
-  uint nb_visited = 0;
-  std::vector<std::vector<int> > neighborhood(pc_->points.size());
 
   // --- Do a BFS per node in the graph ---------------------------------------
-  for (uint node_idx=0; node_idx < nodes_elts_.size(); node_idx++) {
-    // --- Setup for BFS ------------------------------------------------------
-    std::vector<bool> visited_local(pc_->points.size());
-    uint nb_visited_local = 0;
-    std::deque<int> queue;
+  std::vector<int> node_association(mesh_->polygons.size(), -1);
 
-    if (nb_visited == pc_->points.size())
+  for (uint node_idx=0; node_idx < nodes_nb_; node_idx++) {
+    // --- Select a node and enqueue it ---------------------------------------
+    float rdn_weight = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/total_area));
+    uint sampled_idx = mesh_->polygons.size() + 1;
+
+    for (uint tri_idx=0; tri_idx<face_area.size(); tri_idx++) {
+      rdn_weight -= face_area[tri_idx];
+
+      if (rdn_weight <= 0.) {
+        sampled_idx = tri_idx;
+        break;
+      }
+    }
+
+    // Failed to sample a point
+    if (sampled_idx == (mesh_->polygons.size() + 1))
       break;
 
-    // --- Select a node and enqueue it ---------------------------------------
-    int rdn_idx;
-    do {
-      rdn_idx = rand() % pc_->points.size();
-    } while (visited[rdn_idx]);
+    sampled_indices_.push_back(sampled_idx);
 
-    if (!visited[rdn_idx])
-      nb_visited++;
+    // --- Setup for BFS ------------------------------------------------------
+    std::deque<int> queue;
+    queue.push_back(sampled_idx);
 
-    visited[rdn_idx] = true;
-    visited_local[rdn_idx] = true;
-    neighborhood[rdn_idx].push_back(node_idx);
-    queue.push_back(rdn_idx);
-    sampled_indices_.push_back(rdn_idx);
-    node_surface_tree_depth_[node_idx][rdn_idx] = 0;
+    float sampled_area = 0.; //face_area[sampled_idx];
 
+    std::vector<bool> visited(mesh_->polygons.size(), false);
+    visited[sampled_idx] = true;
 
     // --- BFS over the graph to extract the neighborhood ---------------------
-    while(!queue.empty() && nb_visited_local < neigh_nb)
-    {
-      // Dequeue a vertex from queue and print it
+    while(!queue.empty() && sampled_area < target_area) {
+      // Dequeue a face
       int s = queue.front();
       queue.pop_front();
-      nb_visited_local++;
-      if (nb_visited_local < neigh_nb/2)
-        nodes_elts_[node_idx].push_back(s);
 
-      int nb_pt_idx;
-      for (uint nb_idx=0; nb_idx < adj_list_[s].size(); nb_idx++) {
-        nb_pt_idx = adj_list_[s][nb_idx];
-        if (!visited[nb_pt_idx])
-          nb_visited++;
+      // Update the areas
+      nodes_elts_[node_idx].push_back(s);
+      node_association[s] = node_idx;
+      if (face_area[s] > (target_area - sampled_area)) {
+        sampled_area = target_area;
+        total_area -= target_area - sampled_area;
+        face_area[s] -= target_area - sampled_area;
+      } else {
+        sampled_area += face_area[s];
+        total_area -= face_area[s];
+        face_area[s] = 0.;
+      }
 
-        if (!visited_local[nb_pt_idx]) {
+      // For each edge, find the biggest unvisited neighbor and visit all of them
+      for (uint edge_idx=0; edge_idx<3; edge_idx++) {
+        uint idx1 = mesh_->polygons[s].vertices[edge_idx];
+        uint idx2 = mesh_->polygons[s].vertices[(edge_idx+1)%3];
 
-          node_surface_tree_[node_idx][s].push_back(nb_pt_idx);
-          node_surface_tree_depth_[node_idx][nb_pt_idx] = node_surface_tree_depth_[node_idx][s] + 1;
-          visited[nb_pt_idx] = true;
-          visited_local[nb_pt_idx] = true;
+        if (idx1 > idx2) {
+          uint tmp = idx1;
+          idx1 = idx2;
+          idx2 = tmp;
+        }
 
-          // Fill in the adjacency matrix
-          for (uint i=0; i < neighborhood[nb_pt_idx].size(); i++) {
-            int node_idx2 = neighborhood[nb_pt_idx][i];
+        Edge edge_id(idx1,idx2);
+        int neigh_tri_idx = -1;
+        float max_surface_area = -1.;
+        for (uint i=0; i<edge_to_triangle[edge_id].size(); i++) {
+
+          if (node_association[edge_to_triangle[edge_id][i]] != -1) {
+            uint node_idx2 = node_association[edge_to_triangle[edge_id][i]];
             adj_mat[node_idx*nodes_nb_ + node_idx2] = true;
             adj_mat[node_idx2*nodes_nb_ + node_idx] = true;
           }
-          neighborhood[nb_pt_idx].push_back(node_idx);
 
-          queue.push_back(nb_pt_idx);
+          if (visited[edge_to_triangle[edge_id][i]]) {
+            continue;
+          } else {
+            visited[edge_to_triangle[edge_id][i]] = true;
+          }
+          // This is not the triangle you're looking for
+          if (edge_to_triangle[edge_id][i] == s)
+            continue;
+
+          // If we're here, it is one of the unvisited neighboring triangles
+          if (face_area[edge_to_triangle[edge_id][i]] > max_surface_area) {
+            neigh_tri_idx = edge_to_triangle[edge_id][i];
+            max_surface_area = face_area[edge_to_triangle[edge_id][i]];
+          }
+        } // --loop over edge neighbors
+
+        // If a unvisited triangle was found for that edge, enqueue it
+        if (neigh_tri_idx != -1 && max_surface_area > 0.) {
+          queue.push_back(neigh_tri_idx);
         }
-      }
+
+      } // --loop over triangle edges
     } // while queue not empty
+
+    if (debug_)
+      std::cout << node_idx << " Sampled idx " << sampled_idx << " (Contains " << nodes_elts_[node_idx].size() << " faces)" << std::endl;
   } // for each node
+
+  for (auto area : face_area)
+    if (area < 0.)
+      std::cout<< "Areas" << area << std::endl;
 
 
   // Update the valid indices vector
@@ -618,52 +677,16 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
   Eigen::MatrixXd V_uv;
 
   {
-    ScopeTime t("fucking triangles computation", debug_);
-    // --- FUCKING TRIANGLES ----------------------------------------------------
-    // Vertex to face mapping
-    // TODO No longer necessary if I sample faces instead
-    std::vector<std::vector<uint> > vertex_to_face;
-    vertex_to_face.resize(pc_->points.size());
-    for (uint i=0; i < vertex_to_face.size(); i++)
-      vertex_to_face[i].reserve(5);
-
-    for (uint i=0; i<mesh_->polygons.size(); i++) {
-      pcl::Vertices tri = mesh_->polygons[i];
-      vertex_to_face[tri.vertices[0]].push_back(i);
-      vertex_to_face[tri.vertices[1]].push_back(i);
-      vertex_to_face[tri.vertices[2]].push_back(i);
-    }
-
-    // Extract the face subset
-    std::set<uint> face_subset;
-    for (uint i=0; i<nodes_elts_[0].size(); i++) {
-      uint cur_vertex = nodes_elts_[0][i];
-      for (uint j=0; j<vertex_to_face[cur_vertex].size(); j++) {
-        face_subset.insert(vertex_to_face[cur_vertex][j]);
-      }
-    }
-
+    ScopeTime t("Subset extraction computation", debug_);
+    // --- SUBSET EXTRACTION --------------------------------------------------
     // Extract the proper vertex subset corresponding to our face subset
-    // it's different to nodes_elts_ because of the boundary faces !
-    // TODO This and previous loops go away if I sample per face !!
     std::set<uint> vertex_subset;
-    for(auto face_idx : face_subset) {
+    for (uint tri_idx=0; tri_idx < nodes_elts_[0].size(); tri_idx++) {
+      uint face_idx = nodes_elts_[0][tri_idx];
       vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
       vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
       vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
     }
-
-    // // Map V index of the center to pc_ index ! Hopefully useless outside the viz ? Used to re-center the coordinates
-    // uint new_center = 0;
-    // uint center_loop_idx = 0;
-    // for (auto vertex_idx : vertex_subset) {
-    //   if (vertex_idx == sampled_indices_[0]) {
-    //     new_center = center_loop_idx;
-    //     std::cout << "New center is " << new_center << std::endl;
-    //   }
-    //   center_loop_idx++;
-    // }
-
 
     // Re-map vertices of the subset to 0-vertices_nb to re-index the triangles properly
     std::unordered_map<uint, uint> reverse_vertex_idx;
@@ -673,27 +696,13 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
       new_idx++;
     }
 
-    // Create the actual mapping !
-    // TODO Maybe to be fused with the filling in of F for brevity
-    std::vector<std::vector<uint> > reindexed_triangles;
-    reindexed_triangles.resize(face_subset.size(), std::vector<uint>(3));
-    uint loop_idx = 0;
-    for (auto face_idx : face_subset) {
-      reindexed_triangles[loop_idx][0] = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[0]];
-      reindexed_triangles[loop_idx][1] = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[1]];
-      reindexed_triangles[loop_idx][2] = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[2]];
-      loop_idx++;
-    }
-
     // --- LibIGL setup ---------------------------------------------------------
     V.resize(vertex_subset.size(), 3);
-    F.resize(reindexed_triangles.size(), 3);
+    F.resize(nodes_elts_[0].size(), 3);
 
     if (debug_)
-      std::cout << "Original node size: " << nodes_elts_[0].size() << " | "
-                << "Vertex subset size: " << vertex_subset.size() << " | "
-                << "Face subset size: " << face_subset.size()
-                << std::endl;
+      std::cout << "Node size (faces): " << nodes_elts_[0].size() << " | "
+                << "Vertex subset size: " << vertex_subset.size() << std::endl;
 
     // Fill in V
     uint v_idx=0;
@@ -705,202 +714,209 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
     }
 
     // Fill in F
-    for (uint i=0; i<reindexed_triangles.size(); i++) {
-      for (uint j=0; j<3; j++)
-        F(i,j) = reindexed_triangles[i][j];
+    for (uint loop_idx=0; loop_idx < nodes_elts_[0].size(); loop_idx++) {
+      uint face_idx = nodes_elts_[0][loop_idx];
+      F(loop_idx, 0) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[0]];
+      F(loop_idx, 1) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[1]];
+      F(loop_idx, 2) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[2]];
     }
   }
 
+  std::cout << "LSCM begin" << std::endl;
   {
-    ScopeTime t("UV Mapping subcomputation", debug_);
-    {
-      ScopeTime t("LSCM subcomputation", debug_);
+    ScopeTime t("LSCM subcomputation", debug_);
 
-      // Fix two points on the boundary
-      Eigen::VectorXi bnd,b(2,1);
-      igl::boundary_loop(F,bnd);
-      b(0) = bnd(0);
-      int idx_b1 = round(bnd.size()/2);
-      b(1) = bnd(idx_b1);
-      Eigen::MatrixXd bc(2,2);
-      bc<<0,0,1,0;
+    // Fix two points on the boundary
+    igl::writePLY("./extracted_subset.ply", V, F);
+    Eigen::VectorXi bnd,b(2,1);
+    igl::boundary_loop(F,bnd);
+    std::cout << "A1" << std::endl;
+    std::cout << "bnd.size() " << bnd.size() << std::endl;
+    // std::cout << "bnd " << bnd << std::endl;
+    b(0) = bnd(0);
+    int idx_b1 = round(bnd.size()/2);
+    std::cout << "A2" << std::endl;
+    b(1) = bnd(idx_b1);
+    Eigen::MatrixXd bc(2,2);
+    bc<<0,0,1,0;
+    std::cout << "A3" << std::endl;
 
-      // LSCM parametrization
-      igl::lscm(V,F,b,bc,V_uv);
+    // LSCM parametrization
+    igl::lscm(V,F,b,bc,V_uv);
+  }
+
+  // Scale the uv
+  V_uv *= 5;
+
+
+
+  std::cout << "Rasterizer begin" << std::endl;
+  {
+    ScopeTime t("Rasterizer computation", debug_);
+
+    double max_u = -50.;
+    double min_u = 50.;
+    double max_v = -50.;
+    double min_v = 50.;
+    for (uint i=0; i<V_uv.rows(); i++) {
+      if (V_uv(i,0) > max_u) {
+        max_u = V_uv(i,0);
+      }
+      if (V_uv(i,0) < min_u) {
+        min_u = V_uv(i,0);
+      }
+      if (V_uv(i,1) > max_v) {
+        max_v = V_uv(i,1);
+      }
+      if (V_uv(i,1) < min_v) {
+        min_v = V_uv(i,1);
+      }
     }
 
-    // Scale the uv
-    V_uv *= 5;
+    // --- Finding out the center triangle of the map -----------------------
+    uint center_tri_idx = 0;
+    double u_center_pt = (max_u + min_u) / 2;
+    double v_center_pt = (max_v + min_v) / 2;
+    Eigen::Vector3d vcenter;
+
+    for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
+      double tri_max_u = std::max(V_uv(F(face_idx, 0), 0), std::max(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
+      double tri_min_u = std::min(V_uv(F(face_idx, 0), 0), std::min(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
+      if ((u_center_pt > tri_max_u) || (u_center_pt < tri_min_u))
+        continue;
+
+      double tri_max_v = std::max(V_uv(F(face_idx, 0), 1), std::max(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
+      double tri_min_v = std::min(V_uv(F(face_idx, 0), 1), std::min(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
+      if ((v_center_pt > tri_max_v) || (v_center_pt < tri_min_v))
+        continue;
+
+      // Center point is within the bounding box. Now check if it's in the triangle
+      double w0 = edgeFunction(V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
+                               V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
+                               u_center_pt, v_center_pt);
+      double w1 = edgeFunction(V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
+                               V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
+                               u_center_pt, v_center_pt);
+      double w2 = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
+                               V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
+                               u_center_pt, v_center_pt);
+
+      if ((w0 < 0. && w1 < 0. && w2 < 0.) || (w0 > 0. && w1 > 0. && w2 > 0.)) {
+        center_tri_idx = face_idx;
+        double area = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
+                                   V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
+                                   V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1));
+        w0 /= area;
+        w1 /= area;
+        w2 /= area;
+
+        vcenter = fabs(w0)*V.row(F(face_idx,0)) + fabs(w1)*V.row(F(face_idx,1)) + fabs(w2)*V.row(F(face_idx,2));
+        break;
+      }
+    }
 
 
-    {
-      ScopeTime t("Rasterizer computation", debug_);
+    // --- Vertices features computation ------------------------------------
+    // TODO change to correct center face once I sample per triangle
+    Eigen::Vector3d vcenter0 = V.row(F(center_tri_idx, 0));
+    Eigen::Vector3d vcenter1 = V.row(F(center_tri_idx, 1));
+    Eigen::Vector3d vcenter2 = V.row(F(center_tri_idx, 2));
 
-      double max_u = -50.;
-      double min_u = 50.;
-      double max_v = -50.;
-      double min_v = 50.;
-      for (uint i=0; i<V_uv.rows(); i++) {
-        if (V_uv(i,0) > max_u) {
-          max_u = V_uv(i,0);
-        }
-        if (V_uv(i,0) < min_u) {
-          min_u = V_uv(i,0);
-        }
-        if (V_uv(i,1) > max_v) {
-          max_v = V_uv(i,1);
-        }
-        if (V_uv(i,1) < min_v) {
-          min_v = V_uv(i,1);
-        }
+    Eigen::Vector3d vcenter01 = vcenter0 - vcenter1;
+    Eigen::Vector3d vcenter02 = vcenter0 - vcenter2;
+
+    Eigen::Vector3d n_centertri = vcenter01.cross(vcenter02);
+    n_centertri.normalize();
+
+    // Get coordinates centered around the sample point
+    Eigen::MatrixXd V_centered = V;
+    V_centered.rowwise() -= vcenter.transpose();
+
+    // Compute the euclidean distance
+    Eigen::VectorXd Ved = V_centered.rowwise().lpNorm<2>();
+
+    // Compute the distance to the triangle plane
+    Eigen::VectorXd Vpd;
+    Vpd.resize(V.rows());
+    for (uint i=0; i<Vpd.rows(); i++) {
+      Vpd(i) = n_centertri.dot(V_centered.row(i));
+    }
+
+    // --- Rasterization ----------------------------------------------------
+    Eigen::MatrixXd res_image_0 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+    Eigen::MatrixXd res_image_1 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+
+    for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
+      int min_x = image_size + 1;
+      int max_x = -1;
+      std::vector<int> vx(3);
+      std::vector<int> vy(3);
+
+      // Get the range in x coordinates
+      for (uint i=0; i<3; i++) {
+        vx[i] = image_size * (V_uv(F(face_idx, i), 0) - min_u) / (max_u - min_u);
+        vy[i] = image_size * (V_uv(F(face_idx, i), 1) - min_v) / (max_v - min_v);
+
+        if (vx[i] < min_x)
+          min_x = vx[i];
+
+        if (vx[i] > max_x)
+          max_x = vx[i];
       }
 
+      // Get the range of y for each x in range of this triangle
+      // aka fully define the area where the triangle needs to be drawn
+      std::vector<int> max_y(max_x-min_x+1, -1);
+      std::vector<int> min_y(max_x-min_x+1, image_size + 1);
 
-      // --- Finding out the center triangle of the map -----------------------
-      uint center_tri_idx = 0;
-      double u_center_pt = (max_u + min_u) / 2;
-      double v_center_pt = (max_v + min_v) / 2;
-      Eigen::Vector3d vcenter;
-
-      for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
-        double tri_max_u = std::max(V_uv(F(face_idx, 0), 0), std::max(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
-        double tri_min_u = std::min(V_uv(F(face_idx, 0), 0), std::min(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
-        if ((u_center_pt > tri_max_u) || (u_center_pt < tri_min_u))
-          continue;
-
-        double tri_max_v = std::max(V_uv(F(face_idx, 0), 1), std::max(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
-        double tri_min_v = std::min(V_uv(F(face_idx, 0), 1), std::min(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
-        if ((v_center_pt > tri_max_v) || (v_center_pt < tri_min_v))
-          continue;
-
-        // Center point is within the bounding box. Now check if it's in the triangle
-        double w0 = edgeFunction(V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                 V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
-                                 u_center_pt, v_center_pt);
-        double w1 = edgeFunction(V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
-                                 V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                 u_center_pt, v_center_pt);
-        double w2 = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                 V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                 u_center_pt, v_center_pt);
-
-        if ((w0 < 0. && w1 < 0. && w2 < 0.) || (w0 > 0. && w1 > 0. && w2 > 0.)) {
-          center_tri_idx = face_idx;
-          double area = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                     V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                     V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1));
-          w0 /= area;
-          w1 /= area;
-          w2 /= area;
-
-          vcenter = fabs(w0)*V.row(F(face_idx,0)) + fabs(w1)*V.row(F(face_idx,1)) + fabs(w2)*V.row(F(face_idx,2));
-          break;
-        }
+      for(uint i=0; i<3; i++) {
+        bresenham_line(vx[i], vy[i], vx[(i+1)%3], vy[(i+1)%3], min_y, max_y, min_x);
       }
 
+      // Once we have the boundaries of the triangles, draw it !
+      float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])); //Twice the area but who cares
 
-      // --- Vertices features computation ------------------------------------
-      // TODO change to correct center face once I sample per triangle
-      Eigen::Vector3d vcenter0 = V.row(F(center_tri_idx, 0));
-      Eigen::Vector3d vcenter1 = V.row(F(center_tri_idx, 1));
-      Eigen::Vector3d vcenter2 = V.row(F(center_tri_idx, 2));
+      for (uint i=0; i<max_y.size(); i++) {
+        // Compute the barycentric coordinates and the step update
+        float w0 = (min_x + static_cast<int>(i) - vx[1]) * (vy[2] - vy[1]) - (min_y[i] - vy[1]) * (vx[2] - vx[1]);
+        float w1 = (min_x + static_cast<int>(i) - vx[2]) * (vy[0] - vy[2]) - (min_y[i] - vy[2]) * (vx[0] - vx[2]);
+        float w2 = (min_x + static_cast<int>(i) - vx[0]) * (vy[1] - vy[0]) - (min_y[i] - vy[0]) * (vx[1] - vx[0]);
 
-      Eigen::Vector3d vcenter01 = vcenter0 - vcenter1;
-      Eigen::Vector3d vcenter02 = vcenter0 - vcenter2;
+        w0 /= tri_area;
+        w1 /= tri_area;
+        w2 /= tri_area;
 
-      Eigen::Vector3d n_centertri = vcenter01.cross(vcenter02);
-      n_centertri.normalize();
+        float w0_stepy = -(vx[2] - vx[1]) / tri_area;
+        float w1_stepy = -(vx[0] - vx[2]) / tri_area;
+        float w2_stepy = -(vx[1] - vx[0]) / tri_area;
 
-      // Get coordinates centered around the sample point
-      Eigen::MatrixXd V_centered = V;
-      V_centered.rowwise() -= vcenter.transpose();
+        for (uint j=min_y[i]; j<max_y[i]; j++) {
+          res_image_0((min_x + i), j) = fabs(w0)*Ved(F(face_idx, 0)) + fabs(w1)*Ved(F(face_idx, 1)) + fabs(w2)*Ved(F(face_idx, 2));
+          res_image_1((min_x + i), j) = fabs(w0)*Vpd(F(face_idx, 0)) + fabs(w1)*Vpd(F(face_idx, 1)) + fabs(w2)*Vpd(F(face_idx, 2));
 
-      // Compute the euclidean distance
-      Eigen::VectorXd Ved = V_centered.rowwise().lpNorm<2>();
-
-      // Compute the distance to the triangle plane
-      Eigen::VectorXd Vpd;
-      Vpd.resize(V.rows());
-      for (uint i=0; i<Vpd.rows(); i++) {
-        Vpd(i) = n_centertri.dot(V_centered.row(i));
-      }
-
-      // --- Rasterization ----------------------------------------------------
-      Eigen::MatrixXd res_image_0 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-      Eigen::MatrixXd res_image_1 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-
-      for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
-        int min_x = image_size + 1;
-        int max_x = -1;
-        std::vector<int> vx(3);
-        std::vector<int> vy(3);
-
-        // Get the range in x coordinates
-        for (uint i=0; i<3; i++) {
-          vx[i] = image_size * (V_uv(F(face_idx, i), 0) - min_u) / (max_u - min_u);
-          vy[i] = image_size * (V_uv(F(face_idx, i), 1) - min_v) / (max_v - min_v);
-
-          if (vx[i] < min_x)
-            min_x = vx[i];
-
-          if (vx[i] > max_x)
-            max_x = vx[i];
-        }
-
-        // Get the range of y for each x in range of this triangle
-        // aka fully define the area where the triangle needs to be drawn
-        std::vector<int> max_y(max_x-min_x+1, -1);
-        std::vector<int> min_y(max_x-min_x+1, image_size + 1);
-
-        for(uint i=0; i<3; i++) {
-          bresenham_line(vx[i], vy[i], vx[(i+1)%3], vy[(i+1)%3], min_y, max_y, min_x);
-        }
-
-        // Once we have the boundaries of the triangles, draw it !
-        float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])); //Twice the area but who cares
-
-        for (uint i=0; i<max_y.size(); i++) {
-          // Compute the barycentric coordinates and the step update
-          float w0 = (min_x + static_cast<int>(i) - vx[1]) * (vy[2] - vy[1]) - (min_y[i] - vy[1]) * (vx[2] - vx[1]);
-          float w1 = (min_x + static_cast<int>(i) - vx[2]) * (vy[0] - vy[2]) - (min_y[i] - vy[2]) * (vx[0] - vx[2]);
-          float w2 = (min_x + static_cast<int>(i) - vx[0]) * (vy[1] - vy[0]) - (min_y[i] - vy[0]) * (vx[1] - vx[0]);
-
-          w0 /= tri_area;
-          w1 /= tri_area;
-          w2 /= tri_area;
-
-          float w0_stepy = -(vx[2] - vx[1]) / tri_area;
-          float w1_stepy = -(vx[0] - vx[2]) / tri_area;
-          float w2_stepy = -(vx[1] - vx[0]) / tri_area;
-
-          for (uint j=min_y[i]; j<max_y[i]; j++) {
-            res_image_0((min_x + i), j) = fabs(w0)*Ved(F(face_idx, 0)) + fabs(w1)*Ved(F(face_idx, 1)) + fabs(w2)*Ved(F(face_idx, 2));
-            res_image_1((min_x + i), j) = fabs(w0)*Vpd(F(face_idx, 0)) + fabs(w1)*Vpd(F(face_idx, 1)) + fabs(w2)*Vpd(F(face_idx, 2));
-
-            w0 += w0_stepy;
-            w1 += w1_stepy;
-            w2 += w2_stepy;
-          }
-        }
-      } // for loop on faces
-
-
-      // --- Extract polar representation of our feature map ------------------
-      uint half_image_size = image_size/2;
-      uint x_px, y_px;
-      r_sdiv++;
-      for (uint r=1; r<r_sdiv; r++) {
-        for (uint p=0; p<p_sdiv; p++) {
-          x_px = static_cast<uint>(half_image_size*r*cos(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
-          y_px = static_cast<uint>(half_image_size*r*sin(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
-          result[0][(r-1)*p_sdiv*2 + p*2 + 0] = res_image_0(x_px, y_px);
-          result[0][(r-1)*p_sdiv*2 + p*2 + 1] = res_image_1(x_px, y_px);
-
-          // std::cout << "[" << x_px << ", " << y_px << "]," << std::endl;
+          w0 += w0_stepy;
+          w1 += w1_stepy;
+          w2 += w2_stepy;
         }
       }
-    } // Rasterizer scope
-  }
+    } // for loop on faces
+
+
+    // --- Extract polar representation of our feature map ------------------
+    uint half_image_size = image_size/2;
+    uint x_px, y_px;
+    r_sdiv++;
+    for (uint r=1; r<r_sdiv; r++) {
+      for (uint p=0; p<p_sdiv; p++) {
+        x_px = static_cast<uint>(half_image_size*r*cos(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
+        y_px = static_cast<uint>(half_image_size*r*sin(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
+        result[0][(r-1)*p_sdiv*2 + p*2 + 0] = res_image_0(x_px, y_px);
+        result[0][(r-1)*p_sdiv*2 + p*2 + 1] = res_image_1(x_px, y_px);
+
+        // std::cout << "[" << x_px << ", " << y_px << "]," << std::endl;
+      }
+    }
+  } // Rasterizer scope
 }
 
 
@@ -971,30 +987,53 @@ void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
     // viewer->addCoordinateSystem (1., "coords", 0);
 
     for (uint i=0; i<sampled_indices_.size(); i++) {
-      int idx = sampled_indices_[i];
+      uint tri_idx = sampled_indices_[i];
+      Eigen::Vector4f p1 = pc_->points[mesh_->polygons[tri_idx].vertices[0]].getVector4fMap ();
+      Eigen::Vector4f p2 = pc_->points[mesh_->polygons[tri_idx].vertices[1]].getVector4fMap ();
+      Eigen::Vector4f p3 = pc_->points[mesh_->polygons[tri_idx].vertices[2]].getVector4fMap ();
 
-      if (viz_small_spheres)
-        viewer->addSphere<PointT>(pc_->points[idx], 0.01, 1., 0., 0., "sphere_" +std::to_string(idx));
-      // else
-      //   viewer->addSphere<PointT>(pc_->points[idx], params_.neigh_size, 1., 0., 0., "sphere_" +std::to_string(idx));
+      p1 += p2;
+      p1 += p3;
+      p1 /= 3;
+
+      PointT p;
+      p.x = p1(0);
+      p.y = p1(1);
+      p.z = p1(2);
+
+      if (i == 0)
+        viewer->addSphere<PointT>(p, 0.015, 1., 1., 0., "sphere_zero");
+      else
+        viewer->addSphere<PointT>(p, 0.01, 1., 0., 0., "sphere_" +std::to_string(tri_idx));
 
       for (uint i2=0; i2<nodes_nb_; i2++) {
         if (adj_mat[nodes_nb_*i + i2] > 0.) {
           int idx2 = sampled_indices_[i2];
-          if (idx != idx2)
-            viewer->addLine<PointT>(pc_->points[idx], pc_->points[idx2], 0., 0., 1., "line_" +std::to_string(idx)+std::to_string(idx2));
+          if (tri_idx != idx2) {
+            Eigen::Vector4f p2_1 = pc_->points[mesh_->polygons[idx2].vertices[0]].getVector4fMap ();
+            Eigen::Vector4f p2_2 = pc_->points[mesh_->polygons[idx2].vertices[1]].getVector4fMap ();
+            Eigen::Vector4f p2_3 = pc_->points[mesh_->polygons[idx2].vertices[2]].getVector4fMap ();
+
+            p2_1 += p2_2;
+            p2_1 += p2_3;
+            p2_1 /= 3;
+
+            PointT p2;
+            p2.x = p2_1(0);
+            p2.y = p2_1(1);
+            p2.z = p2_1(2);
+            viewer->addLine<PointT>(p, p2, 0., 0., 1., "line_" +std::to_string(tri_idx)+std::to_string(idx2));
+          }
         }
       }
     }
-
-    viewer->addSphere<PointT>(pc_->points[sampled_indices_[0]], 0.015, 1., 1., 0., "sphere_zero");
 
 
     std::vector<uint> r, g, b;
     r.resize(sampled_indices_.size());
     g.resize(sampled_indices_.size());
     b.resize(sampled_indices_.size());
-    for (int i =0; i < sampled_indices_.size(); i++){
+    for (uint i =0; i < sampled_indices_.size(); i++){
       r[i] = rand() % 255;
       b[i] = rand() % 255;
       g[i] = rand() % 255;
@@ -1016,15 +1055,27 @@ void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
 
     for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
       for (uint pt_idx=0; pt_idx<nodes_elts_[node_idx].size(); pt_idx++) {
-        viz_cloud->points[nodes_elts_[node_idx][pt_idx]].r = r[node_idx];
-        viz_cloud->points[nodes_elts_[node_idx][pt_idx]].g = g[node_idx];
-        viz_cloud->points[nodes_elts_[node_idx][pt_idx]].b = b[node_idx];
+        uint tri_idx = nodes_elts_[node_idx][pt_idx];
+        for (uint i=0; i<3; i++) {
+          viz_cloud->points[mesh_->polygons[tri_idx].vertices[i]].r = r[node_idx];
+          viz_cloud->points[mesh_->polygons[tri_idx].vertices[i]].g = g[node_idx];
+          viz_cloud->points[mesh_->polygons[tri_idx].vertices[i]].b = b[node_idx];
+        }
       }
     }
 
     pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(viz_cloud);
     viewer->addPointCloud<pcl::PointXYZRGB> (viz_cloud, rgb, "cloud");
-    viewer->addPolygonMesh (*mesh_);
+
+
+    // Viz resized mesh
+    pcl::PolygonMesh::Ptr mesh_2(new pcl::PolygonMesh);
+    pcl::PCLPointCloud2 point_cloud2;
+    pcl::toPCLPointCloud2(*pc_, point_cloud2);
+
+    mesh_2->cloud = point_cloud2;
+    mesh_2->polygons = mesh_->polygons;
+    viewer->addPolygonMesh (*mesh_2);
 
   }
 

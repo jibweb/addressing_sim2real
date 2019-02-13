@@ -59,7 +59,7 @@ public:
 
   // General
   void initializePointCloud(float min_angle_z_normal, float neigh_size);
-  void initializeMesh(float min_angle_z_normal, double* adj_mat, unsigned int neigh_nb);
+  void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
   void viz(double* adj_mat, bool viz_small_spheres);
