@@ -18,11 +18,20 @@
 #include "graph_construction.h"
 #include "bresenham.cpp"
 
-typedef std::pair<uint, uint> Edge;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////// GENERAL ///////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+typedef std::pair<uint, uint> Edge;
+uint FACE_NB=0;
+
+struct pair_hash {
+    uint operator () (const std::pair<uint,uint> &p) const {
+        return p.first * FACE_NB + p.second;
+    }
+};
+
 
 float triangle_area(Eigen::Vector4f& p1, Eigen::Vector4f& p2, Eigen::Vector4f& p3) {
   float a,b,c,s;
@@ -168,13 +177,15 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   // TODO : probably should be a param. Weird condition for meshes with triangles of variable areas
   uint min_node_size = 150;
 
-  ScopeTime t("Initialization (MeshGraphConstructor)", debug_);
-  boost::posix_time::ptime start_time_ = boost::posix_time::microsec_clock::local_time ();
+  ScopeTime t("Initialization (MeshGraphConstructor)", true);
+  // boost::posix_time::ptime start_time_ = boost::posix_time::microsec_clock::local_time ();
   // Read the point cloud
   if (pcl::io::loadPLYFile(filename_.c_str(), *mesh_) == -1) {
     PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
     return;
   }
+
+  // std::cout << "A0 " << (static_cast<double> (((boost::posix_time::microsec_clock::local_time () - start_time_).total_milliseconds ()))) << std::endl;
 
   pcl::fromPCLPointCloud2(mesh_->cloud, *pc_);
 
@@ -198,33 +209,42 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   // Initialize the valid indices
   valid_indices_.resize(nodes_nb_);
 
+  // std::cout << "A " << (static_cast<double> (((boost::posix_time::microsec_clock::local_time () - start_time_).total_milliseconds ()))) << std::endl;
+
 
 
   // --- Edge connectivity ----------------------------------------------------
-  std::unordered_map<Edge,std::vector<uint>,boost::hash<Edge> > edge_to_triangle;
-  // std::unordered_map<Edge, std::vector<uint> > edge_to_triangle;
+  FACE_NB = mesh_->polygons.size();
+  std::unordered_map<Edge, std::array<uint, 2>, pair_hash > edge_to_triangle;
+  edge_to_triangle.reserve(3*mesh_->polygons.size());
 
   for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
     for(uint edge_idx=0; edge_idx<3; edge_idx++) {
       uint idx1 = mesh_->polygons[tri_idx].vertices[edge_idx];
       uint idx2 = mesh_->polygons[tri_idx].vertices[(edge_idx+1)%3];
 
-      if (idx1 == idx2)
-        std::cout << "Two vertices of a triangle have the same index aka weird duplicates that are part of a triangle somehow" << std::endl;
-
       if (idx1 > idx2) {
-        Edge edge_id(idx2,idx1);
-        if (edge_to_triangle[edge_id].size() == 0)
-          edge_to_triangle[edge_id].reserve(2);
-        edge_to_triangle[edge_id].push_back(tri_idx);
+        uint tmp = idx1;
+        idx1 = idx2;
+        idx2 = tmp;
+      }
+
+      Edge edge_id(idx2,idx1);
+
+      auto arr = edge_to_triangle.find(edge_id);
+
+      if (arr != edge_to_triangle.end()) {
+        // Edge exists already
+        arr->second[1] = tri_idx;
       } else {
-        Edge edge_id(idx1,idx2);
-        if (edge_to_triangle[edge_id].size() == 0)
-          edge_to_triangle[edge_id].reserve(2);
-        edge_to_triangle[edge_id].push_back(tri_idx);
+        // Edge doesn't exist yet
+        edge_to_triangle[edge_id][0] = tri_idx;
       }
     }
   }
+
+  // std::cout << "B1 " << (static_cast<double> (((boost::posix_time::microsec_clock::local_time () - start_time_).total_milliseconds ()))) << std::endl;
+
 
   std::vector<std::vector<uint> > triangle_neighbors(mesh_->polygons.size());
   for (uint i=0; i<triangle_neighbors.size(); i++)
@@ -232,10 +252,10 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
   for(auto& it : edge_to_triangle) {
     // TODO slightly shitty way of resolving non manifold meshes
-    if (it.second.size() >= 2) {
-      triangle_neighbors[it.second[0]].push_back(it.second[1]);
-      triangle_neighbors[it.second[1]].push_back(it.second[0]);
-    }
+    // if (it.second.size() >= 2) {
+    triangle_neighbors[it.second[0]].push_back(it.second[1]);
+    triangle_neighbors[it.second[1]].push_back(it.second[0]);
+    // }
     // else {
     //   for (uint tri1=0; tri1 < it.second.size(); tri1++) {
     //     for (uint tri2=0; tri2 < it.second.size(); tri2++) {
@@ -247,6 +267,9 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     //   }
     // }
   }
+
+  // std::cout << "B " << (static_cast<double> (((boost::posix_time::microsec_clock::local_time () - start_time_).total_milliseconds ()))) << std::endl;
+
 
   // --- Face area ------------------------------------------------------------
   std::vector<float> face_area;
