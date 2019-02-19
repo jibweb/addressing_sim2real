@@ -7,7 +7,7 @@ from py_graph_construction import PyGraph  # get_graph, get_graph_nd
 
 
 VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF SPH")
-EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z")
+EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z COORDS")
 
 
 # Graph structure
@@ -19,7 +19,7 @@ p.define("feat_type", VERTEX_FEAT.L_ESF.name)
 p.define("feat_nb", 800)
 
 # Edges
-p.define("edge_feat_type", EDGE_FEAT.ROT_Z.name)
+p.define("edge_feat_type", EDGE_FEAT.COORDS.name)
 p.define("edge_feat_nb", 3)
 
 p.define("neigh_size", 0.15)
@@ -117,6 +117,8 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
 
     if p.edge_feat_type == edge_feat.ROT_Z.name:
         edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)
+    elif p.edge_feat_type == edge_feat.COORDS.name:
+        edge_feats = gc.edge_features_coords()
 
     if p.feat_type == vertex_feat.L_ESF.name:
         node_feats = gc.node_features_l_esf(p.feat_nb)
@@ -127,6 +129,8 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
 
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()
+
+    adj_mat = preprocess_adj_to_bias(adj_mat)
 
     return node_feats, adj_mat, edge_feats, valid_indices
 
