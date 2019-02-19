@@ -44,6 +44,7 @@ class Model(object):
                                              p.nodes_nb,
                                              p.nodes_nb],
                                             name="valid_pts")
+
             if p.feats_3d:
                 if p.feat_nb >= 500:
                     self.node_feats = tf.placeholder(tf.float32,
