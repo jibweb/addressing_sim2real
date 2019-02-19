@@ -1,5 +1,5 @@
 import tensorflow as tf
-from utils.tf import conv1d, conv2d, conv1d_bn, conv3d,\
+from utils.tf import conv1d, conv2d, conv2d_bn, conv1d_bn, conv3d,\
                      weight_variable, bias_variable, batch_norm_for_conv1d,\
                      batch_norm_for_conv2d
 
