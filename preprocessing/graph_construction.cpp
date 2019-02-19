@@ -175,9 +175,9 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   if (!debug_)
     pcl::console::setVerbosityLevel(pcl::console::L_ALWAYS);
   // TODO : probably should be a param. Weird condition for meshes with triangles of variable areas
-  uint min_node_size = 150;
+  uint min_node_size = 120;
 
-  ScopeTime t("Initialization (MeshGraphConstructor)", true);
+  ScopeTime t("Initialization (MeshGraphConstructor)", debug_);
   // boost::posix_time::ptime start_time_ = boost::posix_time::microsec_clock::local_time ();
   // Read the point cloud
   if (pcl::io::loadPLYFile(filename_.c_str(), *mesh_) == -1) {
@@ -215,7 +215,8 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
   // --- Edge connectivity ----------------------------------------------------
   FACE_NB = mesh_->polygons.size();
-  std::unordered_map<Edge, std::array<uint, 2>, pair_hash > edge_to_triangle;
+  // std::unordered_map<Edge, std::array<uint, 2>, pair_hash > edge_to_triangle;
+  std::unordered_map<Edge, std::array<int, 2>, boost::hash<Edge> > edge_to_triangle;
   edge_to_triangle.reserve(3*mesh_->polygons.size());
 
   for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
@@ -239,6 +240,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
       } else {
         // Edge doesn't exist yet
         edge_to_triangle[edge_id][0] = tri_idx;
+        edge_to_triangle[edge_id][1] = -1;
       }
     }
   }
@@ -253,8 +255,10 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   for(auto& it : edge_to_triangle) {
     // TODO slightly shitty way of resolving non manifold meshes
     // if (it.second.size() >= 2) {
-    triangle_neighbors[it.second[0]].push_back(it.second[1]);
-    triangle_neighbors[it.second[1]].push_back(it.second[0]);
+    if (it.second[1] != -1) {
+      triangle_neighbors[it.second[0]].push_back(it.second[1]);
+      triangle_neighbors[it.second[1]].push_back(it.second[0]);
+    }
     // }
     // else {
     //   for (uint tri1=0; tri1 < it.second.size(); tri1++) {
@@ -524,11 +528,17 @@ void GraphConstructor::coordsEdgeFeatures(double* edge_feats) {
     index1 = sampled_indices_[pt1_idx];
     Eigen::Vector3f v1 = pc_->points[index1].getVector3fMap();
 
+    if (std::isnan(v1(0)) || std::isnan(v1(1)) || std::isnan(v1(2)))
+      continue;
+
     for (uint pt2_idx=0; pt2_idx < sampled_indices_.size(); pt2_idx++) {
       index2 = sampled_indices_[pt2_idx];
       Eigen::Vector3f v2 = pc_->points[index2].getVector3fMap();
       Eigen::Vector3f v21 = v2 - v1;
       // v21.normalize();
+
+      if (std::isnan(v21(0)) || std::isnan(v21(1)) || std::isnan(v21(2)))
+        continue;
 
       edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 0] = v21(0);
       edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 1] = v21(1);
@@ -751,6 +761,7 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_sdiv, uint p_sdiv) {
+  ScopeTime t("SPH features computation", debug_);
 
   r_sdiv++;
 
@@ -760,8 +771,9 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
     Eigen::MatrixXi F;
     Eigen::MatrixXd V_uv;
 
+
     {
-      ScopeTime t("Subset extraction computation", debug_);
+      // ScopeTime t("Subset extraction computation", debug_);
       // --- SUBSET EXTRACTION --------------------------------------------------
       // Extract the proper vertex subset corresponding to our face subset
       std::set<uint> vertex_subset;
@@ -808,8 +820,10 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
       }
     } // Subset extraction computation
 
+
+
     {
-      ScopeTime t("LSCM computation", debug_);
+      // ScopeTime t("LSCM computation", debug_);
 
       if (debug_)
         igl::writePLY("./extracted_subset.ply", V, F);
@@ -846,8 +860,10 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
       continue;
     }
 
+
+
     {
-      ScopeTime t("Rasterizer computation", debug_);
+      // ScopeTime t("Rasterizer computation", debug_);
 
       double max_u = -50.;
       double min_u = 50.;
@@ -948,7 +964,7 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
         std::vector<int> vx(3);
         std::vector<int> vy(3);
 
-        // Get the range in x coordinates
+        // Get the pixel boundaries of the triangle
         for (uint i=0; i<3; i++) {
           vx[i] = image_size * (V_uv(F(face_idx, i), 0) - min_u) / (max_u - min_u);
           vy[i] = image_size * (V_uv(F(face_idx, i), 1) - min_v) / (max_v - min_v);
@@ -970,7 +986,10 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
         }
 
         // Once we have the boundaries of the triangles, draw it !
-        float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])); //Twice the area but who cares
+        float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])) + 1e-6; //Twice the area but who cares
+
+        if (tri_area == 0.)
+          std::cout << "tri_area " << vx[0] << " " << vx[1] << " " << vx[2] << " | " << vy[0] << " " << vy[1] << " " << vy[2] << std::endl;
 
         for (uint i=0; i<max_y.size(); i++) {
           // Compute the barycentric coordinates and the step update
@@ -982,14 +1001,32 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
           w1 /= tri_area;
           w2 /= tri_area;
 
+          if (std::isnan(w0) || std::isnan(w1) || std::isnan(w2)) {
+            std::cout << "w: "<< w0 << " " << w1 << " " << w2 << " " << tri_area << std::endl;
+          }
+
           float w0_stepy = -(vx[2] - vx[1]) / tri_area;
           float w1_stepy = -(vx[0] - vx[2]) / tri_area;
           float w2_stepy = -(vx[1] - vx[0]) / tri_area;
+
+          if (std::isnan(w0_stepy) || std::isnan(w1_stepy) || std::isnan(w2_stepy)) {
+            std::cout << "w_step: " << w0_stepy << " " << w1_stepy << " " << w2_stepy << " " << tri_area << std::endl;
+          }
 
           for (uint j=min_y[i]; j<max_y[i]; j++) {
             res_image_0((min_x + i), j) = fabs(w0)*Ved(F(face_idx, 0)) + fabs(w1)*Ved(F(face_idx, 1)) + fabs(w2)*Ved(F(face_idx, 2));
             res_image_1((min_x + i), j) = fabs(w0)*Vpd(F(face_idx, 0)) + fabs(w1)*Vpd(F(face_idx, 1)) + fabs(w2)*Vpd(F(face_idx, 2));
             res_image_mask((min_x + i), j) = 1.;
+
+
+          // if (std::isnan(res_image_0(min_x + i, j)))
+          //   std::cout << "feat 0 " << "[" << min_x + i << ", " << j << "], " << fabs(w0) << " " << fabs(w1) << " " << fabs(w2) << " " << std::endl;
+
+          // if (std::isnan(res_image_1(min_x + i, j)))
+          //   std::cout << "feat 1 " << "[" << min_x + i << ", " << j << "], " << fabs(w0) << " " << fabs(w1) << " " << fabs(w2) << " " << std::endl;
+
+          // if (std::isnan(res_image_mask(min_x + i, j)))
+          //   std::cout << "mask . " << "[" << min_x + i << ", " << j << "], " << fabs(w0) << " " << fabs(w1) << " " << fabs(w2) << " " << std::endl;
 
             w0 += w0_stepy;
             w1 += w1_stepy;
@@ -1005,6 +1042,7 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
         for (uint p=0; p<p_sdiv; p++) {
           x_px = static_cast<uint>(half_image_size*r*cos(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
           y_px = static_cast<uint>(half_image_size*r*sin(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
+
           result[node_idx][(r-1)*p_sdiv*3 + p*3 + 0] = res_image_0(x_px, y_px);
           result[node_idx][(r-1)*p_sdiv*3 + p*3 + 1] = res_image_1(x_px, y_px);
           result[node_idx][(r-1)*p_sdiv*3 + p*3 + 2] = res_image_mask(x_px, y_px);
@@ -1167,13 +1205,13 @@ void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
 
 
     // Viz resized mesh
-    pcl::PolygonMesh::Ptr mesh_2(new pcl::PolygonMesh);
-    pcl::PCLPointCloud2 point_cloud2;
-    pcl::toPCLPointCloud2(*pc_, point_cloud2);
+    // pcl::PolygonMesh::Ptr mesh_2(new pcl::PolygonMesh);
+    // pcl::PCLPointCloud2 point_cloud2;
+    // pcl::toPCLPointCloud2(*pc_, point_cloud2);
 
-    mesh_2->cloud = point_cloud2;
-    mesh_2->polygons = mesh_->polygons;
-    viewer->addPolygonMesh (*mesh_2);
+    // mesh_2->cloud = point_cloud2;
+    // mesh_2->polygons = mesh_->polygons;
+    // viewer->addPolygonMesh (*mesh_2);
 
   }
 
