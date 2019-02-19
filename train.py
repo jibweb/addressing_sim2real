@@ -96,8 +96,8 @@ if __name__ == "__main__":
             else True
         dataset = Dataset(batch_size=p.batch_size,
                           balance_train_set=pbalance_train_set,
-                          val_set_pct=p.val_set_pct,
-                          regex=regex)
+                          val_set_pct=p.val_set_pct)
+        #regex=regex)
 
         # --- Model Setup -----------------------------------------------------
         model = Model()
