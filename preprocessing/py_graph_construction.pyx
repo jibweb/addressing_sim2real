@@ -43,7 +43,6 @@ cdef extern from "graph_construction.h":
 
         # General
         # void initialize()
-        void initializePointCloud(float min_angle_z_normal, float neigh_size)
         void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size)
         void correctAdjacencyForValidity(double* adj_mat)
         void getValidIndices(int* valid_indices)
@@ -87,9 +86,6 @@ cdef class PyGraph:
 
         self.nodes_nb = nodes_nb
         self.c_graph = new GraphConstructor(fn, params, gridsize, nodes_nb, debug)
-
-    def initialize_point_cloud(self, float min_angle_z_normal, float neigh_size):
-        self.c_graph.initializePointCloud(min_angle_z_normal, neigh_size)
 
     def initialize_mesh(self, float min_angle_z_normal, float neigh_size):
         cdef np.ndarray[double, ndim=2, mode="c"] adj_mat = np.zeros([self.nodes_nb,
