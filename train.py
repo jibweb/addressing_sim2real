@@ -170,7 +170,7 @@ if __name__ == "__main__":
                          train_op],
                         feed_dict=model.get_feed_dict(xs, ys,
                                                       is_training=True))
-                train_iter = idx + epoch*dataset.train_batch_no
+                train_iter = idx + (epoch-1)*dataset.train_batch_no
                 train_writer.add_summary(summaries, train_iter)
                 bar.next()
             bar.finish()
@@ -188,7 +188,7 @@ if __name__ == "__main__":
             saccuracy_summ, cur_sacc, sloss_summ, cur_sloss = sess.run(
                 [saccuracy_scalar, saccuracy, sloss_scalar, sloss])
 
-            cur_iter = epoch*dataset.train_batch_no
+            cur_iter = (epoch-1)*dataset.train_batch_no
             val_writer.add_summary(saccuracy_summ, cur_iter)
             val_writer.add_summary(sloss_summ, cur_iter)
 
