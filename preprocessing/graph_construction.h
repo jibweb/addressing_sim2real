@@ -61,7 +61,6 @@ public:
   void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
-  void viz(double* adj_mat, bool viz_small_spheres);
   void vizMesh(double* adj_mat, bool viz_small_spheres);
 
   // Node features
