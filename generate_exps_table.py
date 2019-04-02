@@ -7,13 +7,13 @@ OUTPUT_SAVE = "output_save"
 
 KEYS_TO_DROP = [
     "debug", "gridsize",
-    "noise_std", "occl_pct",  "rotation_deg"                     # AUGMENTATION
+    "noise_std", "occl_pct",  "rotation_deg",                    # AUGMENTATION
     "to_keep", "to_remove",                                      # AUGMENTATION
     "batch_size", "decay_rate", "decay_steps", "learning_rate",  # TRAINING
     "max_epochs", "reg_constant",                                # TRAINING
     "num_classes", "val_set_pct",                                # DATASET
     "attn_drop_prob", "feat_drop_prob", "pool_drop_prob",        # MODEL
-    "residual", "transform",                                     # MODEL
+    "residual",                                                  # MODEL
     "viz", "viz_small_spheres",                                  # VIZ
 ]
 
