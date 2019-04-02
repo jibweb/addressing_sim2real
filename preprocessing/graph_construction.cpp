@@ -720,21 +720,35 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
 
       // Fix two points on the boundary
       Eigen::VectorXi bnd,b(2,1);
-      igl::boundary_loop(F,bnd);
+      // igl::boundary_loop(F,bnd);
 
-      if (bnd.size() == 0) {
-        if (debug_)
-          std::cout << "bnd.size() " << bnd.size() << std::endl;
+      // if (bnd.size() == 0) {
+      //   if (debug_)
+      //     std::cout << "bnd.size() " << bnd.size() << std::endl;
 
-        valid_indices_[node_idx] = false;
-        continue;
+      //   valid_indices_[node_idx] = false;
+      //   continue;
+      // }
+      int idx_min_z=-1, idx_max_z=-1;
+      double min_z=1e3, max_z=-1e3;
+
+      for (uint i=0; i<V.rows(); i++) {
+        if (V(i, 2) > max_z) {
+          max_z = V(i, 2);
+          idx_max_z = i;
+        }
+
+        if (V(i, 2) < min_z) {
+          min_z = V(i, 2);
+          idx_min_z = i;
+        }
       }
 
-      b(0) = bnd(0);
-      int idx_b1 = round(bnd.size()/2);
-      b(1) = bnd(idx_b1);
+      b(0) = idx_min_z; //bnd(0);
+      // int idx_b1 = round(bnd.size()/2);
+      b(1) = idx_max_z; //bnd(idx_b1);
       Eigen::MatrixXd bc(2,2);
-      bc<<0,0,1,0;
+      bc<<0,0,0,1;
 
       // LSCM parametrization
       igl::lscm(V,F,b,bc,V_uv);
@@ -818,7 +832,6 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
       }
 
       // --- Vertices features computation ------------------------------------
-      // TODO change to correct center face once I sample per triangle
       Eigen::Vector3d vcenter0 = V.row(F(center_tri_idx, 0));
       Eigen::Vector3d vcenter1 = V.row(F(center_tri_idx, 1));
       Eigen::Vector3d vcenter2 = V.row(F(center_tri_idx, 2));
@@ -876,9 +889,11 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
         }
 
         // Once we have the boundaries of the triangles, draw it !
-        float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])) + 1e-6; //Twice the area but who cares
+        float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])); //Twice the area but who cares
 
         if (tri_area == 0.)
+          continue;
+        if (tri_area <= 2e-6)
           std::cout << "tri_area " << vx[0] << " " << vx[1] << " " << vx[2] << " | " << vy[0] << " " << vy[1] << " " << vy[2] << std::endl;
 
         for (uint i=0; i<max_y.size(); i++) {
@@ -887,24 +902,57 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
           float w1 = (min_x + static_cast<int>(i) - vx[2]) * (vy[0] - vy[2]) - (min_y[i] - vy[2]) * (vx[0] - vx[2]);
           float w2 = (min_x + static_cast<int>(i) - vx[0]) * (vy[1] - vy[0]) - (min_y[i] - vy[0]) * (vx[1] - vx[0]);
 
-          w0 /= tri_area;
-          w1 /= tri_area;
-          w2 /= tri_area;
+          // if (tri_area != 0.) {
+            w0 /= tri_area;
+            w1 /= tri_area;
+            w2 /= tri_area;
+          // } else {
+          //   float norm_factor = w0 + w1 + w2;
+          //   if (norm_factor != 0.) {
+          //     w0 /= norm_factor;
+          //     w1 /= norm_factor;
+          //     w2 /= norm_factor;
+          //   } else {
+          //     w0 = 1./3.;
+          //     w1 = 1./3.;
+          //     w2 = 1./3.;
+          //   }
+          // }
+
+          // if (tri_area <= 2e-6) {
+          //   std::cout << i << " " << min_y[i] << " ||  ws " << w0 << " " << w1 << " " << w2 << std::endl;
+          // }
 
           if (std::isnan(w0) || std::isnan(w1) || std::isnan(w2)) {
             std::cout << "w: "<< w0 << " " << w1 << " " << w2 << " " << tri_area << std::endl;
           }
 
-          float w0_stepy = -(vx[2] - vx[1]) / tri_area;
-          float w1_stepy = -(vx[0] - vx[2]) / tri_area;
-          float w2_stepy = -(vx[1] - vx[0]) / tri_area;
+          float w0_stepy, w1_stepy, w2_stepy;
+
+          // if (tri_area != 0.) {
+            w0_stepy = -(vx[2] - vx[1]) / tri_area;
+            w1_stepy = -(vx[0] - vx[2]) / tri_area;
+            w2_stepy = -(vx[1] - vx[0]) / tri_area;
+          // } else {
+          //   float norm_factor = w0 + w1 + w2;
+          //   if (norm_factor != 0.) {
+          //     w0 /= norm_factor;
+          //     w1 /= norm_factor;
+          //     w2 /= norm_factor;
+          //   } else {
+          //     w0 = 1./3.;
+          //     w1 = 1./3.;
+          //     w2 = 1./3.;
+          //   }
+          // }
 
           if (std::isnan(w0_stepy) || std::isnan(w1_stepy) || std::isnan(w2_stepy)) {
             std::cout << "w_step: " << w0_stepy << " " << w1_stepy << " " << w2_stepy << " " << tri_area << std::endl;
           }
 
           for (uint j=min_y[i]; j<max_y[i]; j++) {
-            res_image_0((min_x + i), j) = fabs(w0)*Ved(F(face_idx, 0)) + fabs(w1)*Ved(F(face_idx, 1)) + fabs(w2)*Ved(F(face_idx, 2));
+            res_image_0((min_x + i), j) = fabs(w0)*V(F(face_idx, 0), 2) + fabs(w1)*V(F(face_idx, 1), 2) + fabs(w2)*V(F(face_idx, 2), 2);
+            // res_image_0((min_x + i), j) = fabs(w0)*Ved(F(face_idx, 0)) + fabs(w1)*Ved(F(face_idx, 1)) + fabs(w2)*Ved(F(face_idx, 2));
             res_image_1((min_x + i), j) = fabs(w0)*Vpd(F(face_idx, 0)) + fabs(w1)*Vpd(F(face_idx, 1)) + fabs(w2)*Vpd(F(face_idx, 2));
             res_image_mask((min_x + i), j) = 1.;
 
@@ -925,21 +973,28 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
         }
       } // for loop on faces
 
-      // --- Extract polar representation of our feature map ------------------
-      uint half_image_size = image_size/2;
-      uint x_px, y_px;
-      for (uint r=1; r<r_sdiv; r++) {
-        for (uint p=0; p<p_sdiv; p++) {
-          x_px = static_cast<uint>(half_image_size*r*cos(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
-          y_px = static_cast<uint>(half_image_size*r*sin(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
-
-          result[node_idx][(r-1)*p_sdiv*3 + p*3 + 0] = res_image_0(x_px, y_px);
-          result[node_idx][(r-1)*p_sdiv*3 + p*3 + 1] = res_image_1(x_px, y_px);
-          result[node_idx][(r-1)*p_sdiv*3 + p*3 + 2] = res_image_mask(x_px, y_px);
-
-          // std::cout << "[" << x_px << ", " << y_px << "]," << std::endl;
+      // // --- Extract polar representation of our feature map ------------------
+      for (uint i=0; i<image_size; i++) {
+        for (uint j=0; j<image_size; j++) {
+          result[node_idx][i*image_size*3 + j*3 + 0] = res_image_0(i, j);
+          result[node_idx][i*image_size*3 + j*3 + 1] = res_image_1(i, j);
+          result[node_idx][i*image_size*3 + j*3 + 2] = res_image_mask(i, j);
         }
       }
+      // uint half_image_size = image_size/2;
+      // uint x_px, y_px;
+      // for (uint r=1; r<r_sdiv; r++) {
+      //   for (uint p=0; p<p_sdiv; p++) {
+      //     x_px = static_cast<uint>(half_image_size*r*cos(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
+      //     y_px = static_cast<uint>(half_image_size*r*sin(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
+
+      //     result[node_idx][(r-1)*p_sdiv*3 + p*3 + 0] = res_image_0(x_px, y_px);
+      //     result[node_idx][(r-1)*p_sdiv*3 + p*3 + 1] = res_image_1(x_px, y_px);
+      //     result[node_idx][(r-1)*p_sdiv*3 + p*3 + 2] = res_image_mask(x_px, y_px);
+
+      //     // std::cout << "[" << x_px << ", " << y_px << "]," << std::endl;
+      //   }
+      // }
 
     } // Rasterizer computation
   } // for loop over each node
@@ -959,7 +1014,7 @@ void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
   {
     ScopeTime t("Mesh viz computation", debug_);
     viewer->setBackgroundColor (0, 0, 0);
-    // viewer->addCoordinateSystem (1., "coords", 0);
+    viewer->addCoordinateSystem (1., "coords", 0);
 
     for (uint i=0; i<sampled_indices_.size(); i++) {
       uint tri_idx = sampled_indices_[i];
@@ -1037,7 +1092,8 @@ void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
     //   viz_cloud->points.push_back(p);
     // }
 
-    for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
+    // for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
+    for (uint node_idx=0; node_idx < 1; node_idx++) {
       Eigen::Vector4f p1 = pc_->points[mesh_->polygons[sampled_indices_[node_idx]].vertices[0]].getVector4fMap ();
       Eigen::Vector4f p2 = pc_->points[mesh_->polygons[sampled_indices_[node_idx]].vertices[1]].getVector4fMap ();
       Eigen::Vector4f p3 = pc_->points[mesh_->polygons[sampled_indices_[node_idx]].vertices[2]].getVector4fMap ();
