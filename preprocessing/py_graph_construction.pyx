@@ -131,7 +131,8 @@ cdef class PyGraph:
         cdef np.ndarray[double, ndim=3, mode="c"] tmp
 
         for i in range(self.nodes_nb):
-            tmp = np.zeros([r_sdiv, p_sdiv, 3], dtype=np.float64)
+            # tmp = np.zeros([r_sdiv, p_sdiv, 3], dtype=np.float64)
+            tmp = np.zeros([image_size, image_size, 3], dtype=np.float64)
             node_feats2d_ptr[i] = &tmp[0, 0, 0]
             node_feats2d.append(tmp)
 
