@@ -12,7 +12,6 @@ EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z COORDS")
 
 # Graph structure
 p.define("nodes_nb", 128)
-p.define("neigh_nb", 5)
 
 # Vertices
 p.define("feat_type", VERTEX_FEAT.L_ESF.name)
@@ -24,8 +23,6 @@ p.define("edge_feat_nb", 3)
 
 p.define("neigh_size", 0.15)
 p.define("gridsize", 64)
-p.define("feats_3d", True)
-p.define("mesh", False)
 # p.define("scale", False)
 p.define("min_angle_z_normal", 0)
 
@@ -109,11 +106,7 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
     gc = PyGraph(fn, nodes_nb=p.nodes_nb, debug=p.debug, gridsize=p.gridsize)
     # gc.initialize()
     # gc.sample_points(p.min_angle_z_normal)
-    if p.mesh:
-        adj_mat = gc.initialize_mesh(p.min_angle_z_normal, p.neigh_size)
-    else:
-        gc.initialize_point_cloud(p.min_angle_z_normal, p.neigh_size)
-        adj_mat = gc.adjacency_occupancy(p.neigh_nb)
+    adj_mat = gc.initialize_mesh(p.min_angle_z_normal, p.neigh_size)
 
     if p.edge_feat_type == edge_feat.ROT_Z.name:
         edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)
