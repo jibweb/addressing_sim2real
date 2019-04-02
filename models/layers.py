@@ -42,6 +42,37 @@ def edge_attn(seq, out_sz, bias_mat, edge_feats, activation,
         return activation(ret)  # activation
 
 
+def mh_edge_attn(seq, out_sz, bias_mat, edge_feats, head_nb,
+                 activation, reg_constant, is_training, bn_decay,
+                 scope, in_drop=0.0, coef_drop=0.0, residual=False,
+                 use_bias_mat=True):
+    with tf.variable_scope(scope):
+        gcn_heads = []
+        # edge feature attention
+        logits = conv2d(edge_feats, head_nb, 1, reg_constant, "edge_feat_attn")
+
+        for head_idx in range(head_nb):
+            with tf.variable_scope("head_" + str(head_idx)):
+                seq_fts = conv1d_bn(seq, out_sz, reg_constant, is_training,
+                                    "feat_conv", activation=None,
+                                    use_bias=False)
+
+                pre_coefs = tf.nn.leaky_relu(logits[:, :, :, head_idx])
+
+                # bias_mat to reintroduce graph structure
+                if use_bias_mat:
+                    pre_coefs += bias_mat
+                coefs = tf.nn.softmax(pre_coefs)
+
+                vals = tf.matmul(coefs, seq_fts)
+                biases = bias_variable([out_sz], reg_constant)
+                ret = vals + biases
+
+                gcn_heads.append(activation(ret))
+
+        return tf.concat(gcn_heads, axis=-1)
+
+
 def neighboring_edge_attn(seq, out_sz, dist_thresh, edge_feats, activation,
                           reg_constant, is_training, bn_decay, scope,
                           in_drop=0.0, coef_drop=0.0, residual=False,
