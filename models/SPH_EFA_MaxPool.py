@@ -4,8 +4,8 @@ from utils.logger import TimeScope
 from utils.tf import fc, fc_bn, define_scope
 from utils.params import params as p
 
-from layers import mh_neigh_edge_attn, avg_graph_pool,\
-                   conv1d_bn, conv2d_bn
+from layers import mh_edge_attn, avg_graph_pool,\
+                   conv1d_bn, conv2d_bn, attn_head
 
 MODEL_NAME = "EFA_CoolPool"
 
@@ -17,10 +17,7 @@ p.define("pool_drop_prob", 0.5)
 p.define("residual", False)
 p.define("graph_hid_units", [16])
 p.define("attn_head_nb", [16])
-p.define("gcn_dist_thresh", [0])
 p.define("red_hid_units", [256, 64])
-p.define("graph_pool", [0])
-p.define("transform", True)
 
 
 class Model(object):
@@ -45,11 +42,20 @@ class Model(object):
                                              p.nodes_nb],
                                             name="valid_pts")
 
+            # self.node_feats = tf.placeholder(tf.float32,
+            #                                  (None,
+            #                                   p.nodes_nb,
+            #                                   p.feat_nb[1],  # r_sdiv
+            #                                   p.feat_nb[2],  # p_sdiv
+            #                                   3),            # eucl dist,
+            #                                                  # norm height
+            #                                                  # mask
+            #                                  name="node_feats")
             self.node_feats = tf.placeholder(tf.float32,
                                              (None,
                                               p.nodes_nb,
-                                              p.feat_nb[1],  # r_sdiv
-                                              p.feat_nb[2],  # p_sdiv
+                                              p.feat_nb[0],  # r_sdiv
+                                              p.feat_nb[0],  # p_sdiv
                                               3),            # eucl dist,
                                                              # norm height
                                                              # mask
@@ -100,18 +106,36 @@ class Model(object):
         feat_red_out = self.node_feats
         with tf.variable_scope('feat_dim_red'):
             print "A", feat_red_out.get_shape()
-            feat_red_out = tf.reshape(feat_red_out, [-1, p.feat_nb[1],
-                                                     p.feat_nb[2], 3])
+            # feat_red_out = tf.reshape(feat_red_out, [-1, p.feat_nb[1],
+            #                                          p.feat_nb[2], 3])
+            feat_red_out = tf.reshape(feat_red_out, [-1, p.feat_nb[0],
+                                                     p.feat_nb[0], 3])
 
             print "B", feat_red_out.get_shape()
 
-            for i in range(len(p.red_hid_units)):
+            # for i in range(len(p.red_hid_units)):
+            #     feat_red_out = tf.concat([feat_red_out,
+            #                               feat_red_out[:, :, :2, :]], axis=-2)
+            #     feat_red_out = conv2d_bn(feat_red_out,
+            #                              out_sz=p.red_hid_units[i],
+            #                              kernel_sz=(5, 3),
+            #                              reg_constant=p.reg_constant,
+            #                              scope="looping_conv_" + str(i),
+            #                              is_training=self.is_training)
+            for i in range(0, len(p.red_hid_units), 2):
                 feat_red_out = conv2d_bn(feat_red_out,
                                          out_sz=p.red_hid_units[i],
                                          kernel_sz=(3, 3),
                                          reg_constant=p.reg_constant,
-                                         scope="looping_conv_" + str(i),
+                                         scope="conv_" + str(i),
                                          is_training=self.is_training)
+                feat_red_out = conv2d_bn(feat_red_out,
+                                         out_sz=p.red_hid_units[i+1],
+                                         kernel_sz=(3, 3),
+                                         reg_constant=p.reg_constant,
+                                         scope="conv_" + str(i+1),
+                                         is_training=self.is_training)
+                feat_red_out = tf.layers.max_pooling2d(feat_red_out, 2, 2)
 
             print "c",  feat_red_out.get_shape()
 
@@ -136,16 +160,36 @@ class Model(object):
             # Pre setup
             feat_gcn = feat_red_out
             edge_feats = self.edge_feats
-            adj_mask = self.adj_mask
+            bias_mat = self.bias_mat
 
             # Apply all convolutions
             for i in range(len(p.graph_hid_units)):
-                feat_gcn = mh_neigh_edge_attn(
-                    feat_gcn, p.graph_hid_units[i], p.gcn_dist_thresh[i],
-                    edge_feats, p.attn_head_nb[i], adj_mask, tf.nn.elu,
-                    p.reg_constant, self.is_training, self.bn_decay,
-                    "attn_heads_" + str(i), in_drop=0.0, coef_drop=0.0,
-                    residual=False, use_bias_mat=True)
+                gcn_heads = []
+                for head_idx in range(p.attn_head_nb[i]):
+                    head = attn_head(feat_gcn,
+                                     out_sz=p.graph_hid_units[i],
+                                     bias_mat=bias_mat,
+                                     activation=tf.nn.elu,
+                                     reg_constant=p.reg_constant,
+                                     is_training=self.is_training,
+                                     bn_decay=self.bn_decay,
+                                     scope="attn_heads_" + str(i) + "/head_" + str(head_idx))
+                    gcn_heads.append(head)
+
+                feat_gcn = tf.concat(gcn_heads, axis=-1)
+
+                # feat_gcn = mh_edge_attn(
+                #     seq=feat_gcn,
+                #     out_sz=p.graph_hid_units[i],
+                #     bias_mat=bias_mat,
+                #     edge_feats=edge_feats,
+                #     head_nb=p.attn_head_nb[i],
+                #     activation=tf.nn.elu,
+                #     reg_constant=p.reg_constant,
+                #     is_training=self.is_training, bn_decay=self.bn_decay,
+                #     scope="attn_heads_" + str(i),
+                #     in_drop=0.0, coef_drop=0.0,
+                #     residual=False, use_bias_mat=True)
 
             gcn_out = feat_gcn
 
@@ -188,16 +232,6 @@ class Model(object):
         tf.summary.scalar('regularization_loss_avg', reg_loss)
 
         total_loss = cross_entropy + reg_loss
-
-        # --- Matrix loss -----------------------------------------------------
-        if p.transform:
-            # Enforce the transformation as orthogonal matrix
-            mat_diff = tf.matmul(self.transform, tf.transpose(self.transform,
-                                                              perm=[0, 2, 1]))
-            mat_diff -= tf.constant(np.eye(3), dtype=tf.float32)
-            mat_diff_loss = tf.nn.l2_loss(mat_diff)
-            tf.summary.scalar('mat_loss', mat_diff_loss)
-            total_loss += 0.001 * mat_diff_loss
 
         tf.summary.scalar('total_loss', total_loss)
         return total_loss
