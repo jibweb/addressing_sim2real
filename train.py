@@ -90,8 +90,8 @@ if __name__ == "__main__":
         # --- Pre processing function setup -----------------------------------
         feat_compute = get_graph_preprocessing_fn(p)
         # --- Dataset setup ---------------------------------------------------
-        regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
-            else "/*_full_wnormals_wattention.pcd"
+        # regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
+        #     else "/*_full_wnormals_wattention.pcd"
         pbalance_train_set = False if p.dataset == DATASETS.ScanNet \
             else True
         dataset = Dataset(batch_size=p.batch_size,

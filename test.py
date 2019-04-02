@@ -41,7 +41,7 @@ if __name__ == "__main__":
     # p.rotation_deg = 180
 
     if args.model_ckpt:
-        MODEL_CKPT = "model_{}/model.ckpt".format(args.model_ckpt)
+        MODEL_CKPT = "model_{0}/model.ckpt-{0}".format(args.model_ckpt)
     else:
         epochs_nb_found = sorted([int(dirname[6:])
                                   for dirname in os.listdir(SAVE_DIR)
@@ -57,11 +57,11 @@ if __name__ == "__main__":
 
     # --- Dataset setup -------------------------------------------------------
     Dataset, CLASS_DICT = get_dataset(p.dataset)
-    regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
-            else "/*_full_wnormals_wattention.pcd"
+    # regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
+    #         else "/*_full_wnormals_wattention.pcd"
     dataset = Dataset(batch_size=p.batch_size,
-                      val_set_pct=p.val_set_pct,
-                      regex=regex)
+                      val_set_pct=p.val_set_pct)
+                     # regex=regex)
 
     # --- Model Setup ---------------------------------------------------------
     Model = get_model(p.model)
