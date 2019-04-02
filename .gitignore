@@ -5,3 +5,4 @@ cmake_build
 CMakeLists.txt
 output_save
 *.sublime-*
+.experiment_history
