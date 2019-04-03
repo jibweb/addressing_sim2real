@@ -16,7 +16,7 @@
 #include <igl/writePLY.h>
 
 #include "graph_construction.h"
-#include "bresenham.cpp"
+#include "mesh_utils.cpp"
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -24,27 +24,6 @@
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 typedef std::pair<uint, uint> Edge;
-uint FACE_NB=0;
-
-struct pair_hash {
-    uint operator () (const std::pair<uint,uint> &p) const {
-        return p.first * FACE_NB + p.second;
-    }
-};
-
-
-float triangle_area(Eigen::Vector4f& p1, Eigen::Vector4f& p2, Eigen::Vector4f& p3) {
-  float a,b,c,s;
-
-  // Get the area of the triangle
-  Eigen::Vector4f v21 (p2 - p1);
-  Eigen::Vector4f v31 (p3 - p1);
-  Eigen::Vector4f v23 (p2 - p3);
-  a = v21.norm (); b = v31.norm (); c = v23.norm (); s = (a+b+c) * 0.5f + 1e-6;
-
-  return sqrt(s * (s-a) * (s-b) * (s-c));
-}
-
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size) {
@@ -91,8 +70,6 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
 
   // --- Edge connectivity ----------------------------------------------------
-  FACE_NB = mesh_->polygons.size();
-  // std::unordered_map<Edge, std::array<uint, 2>, pair_hash > edge_to_triangle;
   std::unordered_map<Edge, std::array<int, 2>, boost::hash<Edge> > edge_to_triangle;
   edge_to_triangle.reserve(3*mesh_->polygons.size());
 
@@ -769,67 +746,11 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
     {
       // ScopeTime t("Rasterizer computation", debug_);
 
-      double max_u = -50.;
-      double min_u = 50.;
-      double max_v = -50.;
-      double min_v = 50.;
-      for (uint i=0; i<V_uv.rows(); i++) {
-        if (V_uv(i,0) > max_u) {
-          max_u = V_uv(i,0);
-        }
-        if (V_uv(i,0) < min_u) {
-          min_u = V_uv(i,0);
-        }
-        if (V_uv(i,1) > max_v) {
-          max_v = V_uv(i,1);
-        }
-        if (V_uv(i,1) < min_v) {
-          min_v = V_uv(i,1);
-        }
-      }
-
       // --- Finding out the center triangle of the map -----------------------
       uint center_tri_idx = 0;
-      double u_center_pt = (max_u + min_u) / 2;
-      double v_center_pt = (max_v + min_v) / 2;
       Eigen::Vector3d vcenter;
+      find_center_triangle(V, F, V_uv, vcenter, center_tri_idx);
 
-
-      for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
-        double tri_max_u = std::max(V_uv(F(face_idx, 0), 0), std::max(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
-        double tri_min_u = std::min(V_uv(F(face_idx, 0), 0), std::min(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
-        if ((u_center_pt > tri_max_u) || (u_center_pt < tri_min_u))
-          continue;
-
-        double tri_max_v = std::max(V_uv(F(face_idx, 0), 1), std::max(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
-        double tri_min_v = std::min(V_uv(F(face_idx, 0), 1), std::min(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
-        if ((v_center_pt > tri_max_v) || (v_center_pt < tri_min_v))
-          continue;
-
-        // Center point is within the bounding box. Now check if it's in the triangle
-        double w0 = edgeFunction(V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                 V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
-                                 u_center_pt, v_center_pt);
-        double w1 = edgeFunction(V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
-                                 V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                 u_center_pt, v_center_pt);
-        double w2 = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                 V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                 u_center_pt, v_center_pt);
-
-        if ((w0 < 0. && w1 < 0. && w2 < 0.) || (w0 > 0. && w1 > 0. && w2 > 0.)) {
-          center_tri_idx = face_idx;
-          double area = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                     V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                     V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1));
-          w0 /= area;
-          w1 /= area;
-          w2 /= area;
-
-          vcenter = fabs(w0)*V.row(F(face_idx,0)) + fabs(w1)*V.row(F(face_idx,1)) + fabs(w2)*V.row(F(face_idx,2));
-          break;
-        }
-      }
 
       // --- Vertices features computation ------------------------------------
       Eigen::Vector3d vcenter0 = V.row(F(center_tri_idx, 0));
@@ -856,147 +777,38 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
         Vpd(i) = n_centertri.dot(V_centered.row(i));
       }
 
-      // --- Rasterization ----------------------------------------------------
-      Eigen::MatrixXd res_image_0 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-      Eigen::MatrixXd res_image_1 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-      Eigen::MatrixXd res_image_mask = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
 
-      for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
-        int min_x = image_size + 1;
-        int max_x = -1;
-        std::vector<int> vx(3);
-        std::vector<int> vy(3);
+      // --- Actual rasterization ---------------------------------------------
+      Eigen::MatrixXd W0 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+      Eigen::MatrixXd W1 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+      Eigen::MatrixXd W2 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+      Eigen::MatrixXi I_face_idx = Eigen::MatrixXi::Constant(image_size+1, image_size+1, -1);
+      Eigen::MatrixXd image_mask = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
 
-        // Get the pixel boundaries of the triangle
-        for (uint i=0; i<3; i++) {
-          vx[i] = image_size * (V_uv(F(face_idx, i), 0) - min_u) / (max_u - min_u);
-          vy[i] = image_size * (V_uv(F(face_idx, i), 1) - min_v) / (max_v - min_v);
-
-          if (vx[i] < min_x)
-            min_x = vx[i];
-
-          if (vx[i] > max_x)
-            max_x = vx[i];
-        }
-
-        // Get the range of y for each x in range of this triangle
-        // aka fully define the area where the triangle needs to be drawn
-        std::vector<int> max_y(max_x-min_x+1, -1);
-        std::vector<int> min_y(max_x-min_x+1, image_size + 1);
-
-        for(uint i=0; i<3; i++) {
-          bresenham_line(vx[i], vy[i], vx[(i+1)%3], vy[(i+1)%3], min_y, max_y, min_x);
-        }
-
-        // Once we have the boundaries of the triangles, draw it !
-        float tri_area = abs((vx[2] - vx[0])*(vy[1] - vy[0]) - (vy[2] - vy[0])*(vx[1] - vx[0])); //Twice the area but who cares
-
-        if (tri_area == 0.)
-          continue;
-        if (tri_area <= 2e-6)
-          std::cout << "tri_area " << vx[0] << " " << vx[1] << " " << vx[2] << " | " << vy[0] << " " << vy[1] << " " << vy[2] << std::endl;
-
-        for (uint i=0; i<max_y.size(); i++) {
-          // Compute the barycentric coordinates and the step update
-          float w0 = (min_x + static_cast<int>(i) - vx[1]) * (vy[2] - vy[1]) - (min_y[i] - vy[1]) * (vx[2] - vx[1]);
-          float w1 = (min_x + static_cast<int>(i) - vx[2]) * (vy[0] - vy[2]) - (min_y[i] - vy[2]) * (vx[0] - vx[2]);
-          float w2 = (min_x + static_cast<int>(i) - vx[0]) * (vy[1] - vy[0]) - (min_y[i] - vy[0]) * (vx[1] - vx[0]);
-
-          // if (tri_area != 0.) {
-            w0 /= tri_area;
-            w1 /= tri_area;
-            w2 /= tri_area;
-          // } else {
-          //   float norm_factor = w0 + w1 + w2;
-          //   if (norm_factor != 0.) {
-          //     w0 /= norm_factor;
-          //     w1 /= norm_factor;
-          //     w2 /= norm_factor;
-          //   } else {
-          //     w0 = 1./3.;
-          //     w1 = 1./3.;
-          //     w2 = 1./3.;
-          //   }
-          // }
-
-          // if (tri_area <= 2e-6) {
-          //   std::cout << i << " " << min_y[i] << " ||  ws " << w0 << " " << w1 << " " << w2 << std::endl;
-          // }
-
-          if (std::isnan(w0) || std::isnan(w1) || std::isnan(w2)) {
-            std::cout << "w: "<< w0 << " " << w1 << " " << w2 << " " << tri_area << std::endl;
-          }
-
-          float w0_stepy, w1_stepy, w2_stepy;
-
-          // if (tri_area != 0.) {
-            w0_stepy = -(vx[2] - vx[1]) / tri_area;
-            w1_stepy = -(vx[0] - vx[2]) / tri_area;
-            w2_stepy = -(vx[1] - vx[0]) / tri_area;
-          // } else {
-          //   float norm_factor = w0 + w1 + w2;
-          //   if (norm_factor != 0.) {
-          //     w0 /= norm_factor;
-          //     w1 /= norm_factor;
-          //     w2 /= norm_factor;
-          //   } else {
-          //     w0 = 1./3.;
-          //     w1 = 1./3.;
-          //     w2 = 1./3.;
-          //   }
-          // }
-
-          if (std::isnan(w0_stepy) || std::isnan(w1_stepy) || std::isnan(w2_stepy)) {
-            std::cout << "w_step: " << w0_stepy << " " << w1_stepy << " " << w2_stepy << " " << tri_area << std::endl;
-          }
-
-          for (uint j=min_y[i]; j<max_y[i]; j++) {
-            res_image_0((min_x + i), j) = fabs(w0)*V(F(face_idx, 0), 2) + fabs(w1)*V(F(face_idx, 1), 2) + fabs(w2)*V(F(face_idx, 2), 2);
-            // res_image_0((min_x + i), j) = fabs(w0)*Ved(F(face_idx, 0)) + fabs(w1)*Ved(F(face_idx, 1)) + fabs(w2)*Ved(F(face_idx, 2));
-            res_image_1((min_x + i), j) = fabs(w0)*Vpd(F(face_idx, 0)) + fabs(w1)*Vpd(F(face_idx, 1)) + fabs(w2)*Vpd(F(face_idx, 2));
-            res_image_mask((min_x + i), j) = 1.;
+      rasterize(V, F, V_uv, W0, W1, W2, I_face_idx, image_mask, image_size);
 
 
-          // if (std::isnan(res_image_0(min_x + i, j)))
-          //   std::cout << "feat 0 " << "[" << min_x + i << ", " << j << "], " << fabs(w0) << " " << fabs(w1) << " " << fabs(w2) << " " << std::endl;
-
-          // if (std::isnan(res_image_1(min_x + i, j)))
-          //   std::cout << "feat 1 " << "[" << min_x + i << ", " << j << "], " << fabs(w0) << " " << fabs(w1) << " " << fabs(w2) << " " << std::endl;
-
-          // if (std::isnan(res_image_mask(min_x + i, j)))
-          //   std::cout << "mask . " << "[" << min_x + i << ", " << j << "], " << fabs(w0) << " " << fabs(w1) << " " << fabs(w2) << " " << std::endl;
-
-            w0 += w0_stepy;
-            w1 += w1_stepy;
-            w2 += w2_stepy;
-          }
-        }
-      } // for loop on faces
-
-      // // --- Extract polar representation of our feature map ------------------
+      // --- Compute feature image --------------------------------------------
       for (uint i=0; i<image_size; i++) {
         for (uint j=0; j<image_size; j++) {
-          result[node_idx][i*image_size*3 + j*3 + 0] = res_image_0(i, j);
-          result[node_idx][i*image_size*3 + j*3 + 1] = res_image_1(i, j);
-          result[node_idx][i*image_size*3 + j*3 + 2] = res_image_mask(i, j);
+          if (!image_mask(i, j))
+            continue;
+
+          uint face_idx = I_face_idx(i, j);
+          // result[node_idx][i*image_size*3 + j*3 + 0] = I_face_idx(i, j);
+          // result[node_idx][i*image_size*3 + j*3 + 1] = W0(i, j);
+          // result[node_idx][i*image_size*3 + j*3 + 2] = W1(i, j);
+          result[node_idx][i*image_size*3 + j*3 + 0] = W0(i, j)*V(F(face_idx, 0), 2)
+                                                     + W1(i, j)*V(F(face_idx, 1), 2)
+                                                     + W2(i, j)*V(F(face_idx, 2), 2);
+          result[node_idx][i*image_size*3 + j*3 + 1] = W0(i, j)*Vpd(F(face_idx, 0))
+                                                     + W1(i, j)*Vpd(F(face_idx, 1))
+                                                     + W2(i, j)*Vpd(F(face_idx, 2));
+          result[node_idx][i*image_size*3 + j*3 + 2] = image_mask(i, j);
         }
       }
-      // uint half_image_size = image_size/2;
-      // uint x_px, y_px;
-      // for (uint r=1; r<r_sdiv; r++) {
-      //   for (uint p=0; p<p_sdiv; p++) {
-      //     x_px = static_cast<uint>(half_image_size*r*cos(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
-      //     y_px = static_cast<uint>(half_image_size*r*sin(2.*M_PI*p / p_sdiv)/r_sdiv + half_image_size);
 
-      //     result[node_idx][(r-1)*p_sdiv*3 + p*3 + 0] = res_image_0(x_px, y_px);
-      //     result[node_idx][(r-1)*p_sdiv*3 + p*3 + 1] = res_image_1(x_px, y_px);
-      //     result[node_idx][(r-1)*p_sdiv*3 + p*3 + 2] = res_image_mask(x_px, y_px);
-
-      //     // std::cout << "[" << x_px << ", " << y_px << "]," << std::endl;
-      //   }
-      // }
-
-    } // Rasterizer computation
+    } // Rasterizer scope
   } // for loop over each node
 } // GraphConstructor::sphNodeFeatures
 
