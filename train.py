@@ -1,3 +1,5 @@
+#!/usr/bin/env python2.7
+
 import argparse
 from dataset import get_dataset, DATASETS
 import os
