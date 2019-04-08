@@ -14,8 +14,17 @@ EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z COORDS")
 p.define("nodes_nb", 128)
 
 # Vertices
-p.define("feat_type", VERTEX_FEAT.L_ESF.name)
-p.define("feat_nb", 800)
+p.define("feat_type", VERTEX_FEAT.SPH.name)
+p.define("feat_nb", [100])
+p.define("feat_config", {
+        "mask": True,
+        "plane_distance": True,
+        "euclidean_distance": False,
+        "z_height": True,
+        "z_rel": False,
+        "x_coords": False,
+        "y_coords": False,
+    })
 
 # Edges
 p.define("edge_feat_type", EDGE_FEAT.COORDS.name)
@@ -117,8 +126,7 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
         node_feats = gc.node_features_l_esf(p.feat_nb)
     elif p.feat_type == vertex_feat.SPH.name:
         node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
-                                          r_sdiv=p.feat_nb[1],
-                                          p_sdiv=p.feat_nb[2])
+                                          sph_config=p.feat_config)
 
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()

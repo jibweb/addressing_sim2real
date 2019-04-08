@@ -627,16 +627,16 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_sdiv, uint p_sdiv) {
+void GraphConstructor::sphNodeFeatures(double** result, uint image_size, SphParams sph_params) {
   ScopeTime t("SPH features computation", debug_);
-
-  r_sdiv++;
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 
     Eigen::MatrixXd V;
+    Eigen::MatrixXd V_centered;
     Eigen::MatrixXi F;
     Eigen::MatrixXd V_uv;
+    Eigen::Matrix3d rf;
 
 
     {
@@ -688,42 +688,63 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
     } // Subset extraction computation
 
 
-
     {
       // ScopeTime t("LSCM computation", debug_);
+
+      // Get a local reference frame
+      V_centered = V.rowwise() - V.colwise().mean();
+      Eigen::MatrixXd cov = (V_centered.adjoint() * V_centered) / double(V.rows() - 1);
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver (cov);
+
+      rf.row (0).matrix () = solver.eigenvectors().col (2);
+      rf.row (2).matrix () = solver.eigenvectors().col (0);
+      rf.row (1).matrix () = rf.row (2).cross (rf.row (0));
 
       if (debug_)
         igl::writePLY("./extracted_subset.ply", V, F);
 
       // Fix two points on the boundary
       Eigen::VectorXi bnd,b(2,1);
-      // igl::boundary_loop(F,bnd);
+      igl::boundary_loop(F,bnd);
 
-      // if (bnd.size() == 0) {
-      //   if (debug_)
-      //     std::cout << "bnd.size() " << bnd.size() << std::endl;
+      if (bnd.size() == 0) {
+        if (debug_)
+          std::cout << "bnd.size() " << bnd.size() << std::endl;
 
-      //   valid_indices_[node_idx] = false;
-      //   continue;
-      // }
-      int idx_min_z=-1, idx_max_z=-1;
-      double min_z=1e3, max_z=-1e3;
+        valid_indices_[node_idx] = false;
+        continue;
+      }
 
-      for (uint i=0; i<V.rows(); i++) {
-        if (V(i, 2) > max_z) {
-          max_z = V(i, 2);
-          idx_max_z = i;
+      int idx_min_val=-1, idx_max_val=-1;
+      double min_val=1e3, max_val=-1e3;
+      for (uint i=0; i<bnd.size(); i++) {
+        int idx = bnd(i);
+        if (V.row(idx).dot(rf.row(0)) > max_val) {
+          max_val = V.row(idx).dot(rf.row(0));
+          idx_max_val = idx;
         }
 
-        if (V(i, 2) < min_z) {
-          min_z = V(i, 2);
-          idx_min_z = i;
+        if (V.row(idx).dot(rf.row(0)) < min_val) {
+          min_val = V.row(idx).dot(rf.row(0));
+          idx_min_val = idx;
         }
       }
 
-      b(0) = idx_min_z; //bnd(0);
+      // for (uint i=0; i<V.rows(); i++) {
+      //   if (V(i, 2) > max_val) {
+      //     max_val = V(i, 2);
+      //     idx_max_val = i;
+      //   }
+
+      //   if (V(i, 2) < min_val) {
+      //     min_val = V(i, 2);
+      //     idx_min_val = i;
+      //   }
+      // }
+
+      b(0) = idx_min_val; //bnd(0);
       // int idx_b1 = round(bnd.size()/2);
-      b(1) = idx_max_z; //bnd(idx_b1);
+      b(1) = idx_max_val; //bnd(idx_b1);
       Eigen::MatrixXd bc(2,2);
       bc<<0,0,0,1;
 
@@ -760,22 +781,50 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
       Eigen::Vector3d vcenter01 = vcenter0 - vcenter1;
       Eigen::Vector3d vcenter02 = vcenter0 - vcenter2;
 
-      Eigen::Vector3d n_centertri = vcenter01.cross(vcenter02);
-      n_centertri.normalize();
+      Eigen::Vector3d n_centertri = rf.row(2);
+      // Eigen::Vector3d n_centertri = vcenter01.cross(vcenter02);
+      // n_centertri.normalize();
 
       // Get coordinates centered around the sample point
-      Eigen::MatrixXd V_centered = V;
-      V_centered.rowwise() -= vcenter.transpose();
+      // Eigen::MatrixXd V_centered = V;
+      // V_centered.rowwise() -= vcenter.transpose();
 
       // Compute the euclidean distance
       Eigen::VectorXd Ved = V_centered.rowwise().lpNorm<2>();
 
-      // Compute the distance to the triangle plane
+      // Compute the distance to the tangential plane
       Eigen::VectorXd Vpd;
       Vpd.resize(V.rows());
       for (uint i=0; i<Vpd.rows(); i++) {
         Vpd(i) = n_centertri.dot(V_centered.row(i));
       }
+
+      Eigen::VectorXd Vxc;
+      Vxc.resize(V.rows());
+      for (uint i=0; i<Vxc.rows(); i++) {
+        Vxc(i) = rf.row(0).dot(V_centered.row(i));
+      }
+
+      Eigen::VectorXd Vyc;
+      Vyc.resize(V.rows());
+      for (uint i=0; i<Vyc.rows(); i++) {
+        Vyc(i) = rf.row(1).dot(V_centered.row(i));
+      }
+
+      // Eigen::Matrix<double, 2, 3> Pi_xyz;
+      // // Eigen::Matrix3d Pi_xyz;
+      // Pi_xyz << V_centered.row(F(center_tri_idx, 0)),
+      //           V_centered.row(F(center_tri_idx, 1));
+
+      // Eigen::Matrix2d Pi_uv;
+      // Pi_uv << V_uv.row(F(center_tri_idx, 0)),
+      //          V_uv.row(F(center_tri_idx, 1));
+      // // Pi_uv << V_uv.row(F(center_tri_idx, 0)), 0.,
+      // //          V_uv.row(F(center_tri_idx, 1)), 0.,
+      // //          V_uv.row(F(center_tri_idx, 2)), 0.;
+
+      // Eigen::Matrix<double, 2, 3> UVs = Pi_uv.inverse() * Pi_xyz;
+      // Eigen::Matrix3d UVs = Pi_uv.inverse() * Pi_xyz;
 
 
       // --- Actual rasterization ---------------------------------------------
@@ -795,18 +844,50 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, uint r_
             continue;
 
           uint face_idx = I_face_idx(i, j);
-          // result[node_idx][i*image_size*3 + j*3 + 0] = I_face_idx(i, j);
-          // result[node_idx][i*image_size*3 + j*3 + 1] = W0(i, j);
-          // result[node_idx][i*image_size*3 + j*3 + 2] = W1(i, j);
-          result[node_idx][i*image_size*3 + j*3 + 0] = W0(i, j)*V(F(face_idx, 0), 2)
-                                                     + W1(i, j)*V(F(face_idx, 1), 2)
-                                                     + W2(i, j)*V(F(face_idx, 2), 2);
-          result[node_idx][i*image_size*3 + j*3 + 1] = W0(i, j)*Vpd(F(face_idx, 0))
-                                                     + W1(i, j)*Vpd(F(face_idx, 1))
-                                                     + W2(i, j)*Vpd(F(face_idx, 2));
-          result[node_idx][i*image_size*3 + j*3 + 2] = image_mask(i, j);
+          uint num_channels = 0;
+
+          if (sph_params.mask) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = image_mask(i, j);
+            num_channels++;
+          }
+          if (sph_params.plane_distance) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Vpd(F(face_idx, 0))
+                                                                  + W1(i, j)*Vpd(F(face_idx, 1))
+                                                                  + W2(i, j)*Vpd(F(face_idx, 2));
+            num_channels++;
+          }
+          if (sph_params.euclidean_distance) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Ved(F(face_idx, 0), 2)
+                                                                  + W1(i, j)*Ved(F(face_idx, 1), 2)
+                                                                  + W2(i, j)*Ved(F(face_idx, 2), 2);
+            num_channels++;
+          }
+          if (sph_params.z_height) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*V(F(face_idx, 0), 2)
+                                                                  + W1(i, j)*V(F(face_idx, 1), 2)
+                                                                  + W2(i, j)*V(F(face_idx, 2), 2);
+            num_channels++;
+          }
+          if (sph_params.z_rel) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*V_centered(F(face_idx, 0), 2)
+                                                                  + W1(i, j)*V_centered(F(face_idx, 1), 2)
+                                                                  + W2(i, j)*V_centered(F(face_idx, 2), 2);
+            num_channels++;
+          }
+          if (sph_params.x_coords) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Vxc(F(face_idx, 0))
+                                                                  + W1(i, j)*Vxc(F(face_idx, 1))
+                                                                  + W2(i, j)*Vxc(F(face_idx, 2));
+            num_channels++;
+          }
+          if (sph_params.y_coords) {
+            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Vyc(F(face_idx, 0))
+                                                                  + W1(i, j)*Vyc(F(face_idx, 1))
+                                                                  + W2(i, j)*Vyc(F(face_idx, 2));
+            num_channels++;
+          }
         }
-      }
+      } // Writing the features into the result image
 
     } // Rasterizer scope
   } // for loop over each node

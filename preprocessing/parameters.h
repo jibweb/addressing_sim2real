@@ -5,8 +5,7 @@
 // #define GRIDSIZE_H GRIDSIZE/2
 
 
-struct Parameters
-{
+struct Parameters {
   // Graph structure
   // unsigned int nodes_nb; // KEPT
   // unsigned int feat_nb; // MOVED TO FEAT COMPUTE CALL
@@ -31,4 +30,15 @@ struct Parameters
   float occl_pct;
   float noise_std;
   unsigned int rotation_deg;
+};
+
+
+struct SphParams {
+  bool mask=false;
+  bool plane_distance=false;
+  bool euclidean_distance=false;
+  bool z_height=false;
+  bool z_rel=false;
+  bool x_coords=false;
+  bool y_coords=false;
 };
