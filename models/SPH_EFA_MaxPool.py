@@ -51,14 +51,13 @@ class Model(object):
             #                                                  # norm height
             #                                                  # mask
             #                                  name="node_feats")
+            self.num_channels = sum(p.feat_config.values())
             self.node_feats = tf.placeholder(tf.float32,
                                              (None,
                                               p.nodes_nb,
-                                              p.feat_nb[0],  # r_sdiv
-                                              p.feat_nb[0],  # p_sdiv
-                                              3),            # eucl dist,
-                                                             # norm height
-                                                             # mask
+                                              p.feat_nb[0],  # image size
+                                              p.feat_nb[0],  # image size
+                                              self.num_channels),
                                              name="node_feats")
 
             self.y = tf.placeholder(tf.float32,
@@ -109,7 +108,8 @@ class Model(object):
             # feat_red_out = tf.reshape(feat_red_out, [-1, p.feat_nb[1],
             #                                          p.feat_nb[2], 3])
             feat_red_out = tf.reshape(feat_red_out, [-1, p.feat_nb[0],
-                                                     p.feat_nb[0], 3])
+                                                     p.feat_nb[0],
+                                                     self.num_channels])
 
             print "B", feat_red_out.get_shape()
 

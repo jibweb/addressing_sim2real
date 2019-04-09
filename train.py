@@ -91,6 +91,7 @@ if __name__ == "__main__":
     with TimeScope("setup", debug_only=True):
         # --- Pre processing function setup -----------------------------------
         feat_compute = get_graph_preprocessing_fn(p)
+
         # --- Dataset setup ---------------------------------------------------
         # regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
         #     else "/*_full_wnormals_wattention.pcd"
