@@ -20,6 +20,7 @@ cdef extern from "graph_construction.h":
         bint z_rel
         bint x_coords
         bint y_coords
+        bint tconv_idx
     ctypedef struct Parameters:
         # Graph structure
         # unsigned int nodes_nb
@@ -58,7 +59,7 @@ cdef extern from "graph_construction.h":
 
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
-        void sphNodeFeatures(double** result, unsigned int image_size, SphParams)
+        void sphNodeFeatures(double** result, int* tconv_idx, unsigned int image_size,  unsigned int num_channels, SphParams)
 
         # Adjacency construction
         void fullConnectionAdjacency(double* adj_mat)
@@ -147,8 +148,11 @@ cdef class PyGraph:
         config_struct.z_rel = sph_config["z_rel"]
         config_struct.x_coords = sph_config["x_coords"]
         config_struct.y_coords = sph_config["y_coords"]
+        config_struct.tconv_idx = False
 
         cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
+        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([1, 1],
+                                                                        dtype=np.int32)
         node_feats2d = []
         cdef np.ndarray[double, ndim=3, mode="c"] tmp
         arr_shape = [image_size, image_size, num_channels]
@@ -158,8 +162,43 @@ cdef class PyGraph:
             node_feats2d_ptr[i] = &tmp[0, 0, 0]
             node_feats2d.append(tmp)
 
-        self.c_graph.sphNodeFeatures(node_feats2d_ptr, image_size, config_struct)
+        self.c_graph.sphNodeFeatures(node_feats2d_ptr, &tconv_indices[0, 0],
+                                     image_size, num_channels, config_struct)
         return node_feats2d
+
+    def node_features_sph_tconv_idx(self, image_size, sph_config):
+        """
+        """
+        num_channels = 0
+        for key, val in sph_config.iteritems():
+            if val:
+                num_channels += 1
+
+        cdef SphParams config_struct
+        config_struct.mask = sph_config["mask"]
+        config_struct.plane_distance = sph_config["plane_distance"]
+        config_struct.euclidean_distance = sph_config["euclidean_distance"]
+        config_struct.z_height = sph_config["z_height"]
+        config_struct.z_rel = sph_config["z_rel"]
+        config_struct.x_coords = sph_config["x_coords"]
+        config_struct.y_coords = sph_config["y_coords"]
+        config_struct.tconv_idx = True
+
+        cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
+        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
+                                                                        dtype=np.int32)
+        node_feats2d = []
+        cdef np.ndarray[double, ndim=3, mode="c"] tmp
+        arr_shape = [image_size, image_size, num_channels]
+
+        for i in range(self.nodes_nb):
+            tmp = np.zeros(arr_shape, dtype=np.float64)
+            node_feats2d_ptr[i] = &tmp[0, 0, 0]
+            node_feats2d.append(tmp)
+
+        self.c_graph.sphNodeFeatures(node_feats2d_ptr, &tconv_indices[0, 0],
+                                     image_size, num_channels, config_struct)
+        return node_feats2d, tconv_indices
 
     def adjacency_full_connection(self):
         cdef np.ndarray[double, ndim=2, mode="c"] adj_mat = np.zeros([self.nodes_nb,

@@ -153,9 +153,10 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   srand (static_cast<unsigned int> (time (0)));
 
   // --- Do a BFS per node in the graph ---------------------------------------
-  std::vector<std::vector<int> > node_association(mesh_->polygons.size());
-  for (uint i=0; i<node_association.size(); i++)
-    node_association[i].reserve(4);
+  // std::vector<std::vector<int> > node_association(mesh_->polygons.size());
+  node_face_association_.resize(mesh_->polygons.size());
+  for (uint i=0; i<node_face_association_.size(); i++)
+    node_face_association_[i].reserve(4);
 
   for (uint node_idx=0; node_idx < nodes_nb_; node_idx++) {
     // --- Select a node and enqueue it ---------------------------------------
@@ -197,7 +198,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
       // Update the areas
       nodes_elts_[node_idx].push_back(s);
-      node_association[s].push_back(node_idx);
+      node_face_association_[s].push_back(node_idx);
 
       if (samplable_face_area[s] > (target_area - sampled_area)) {
         total_area = std::max(0.f, total_area  - target_area + sampled_area);
@@ -238,8 +239,8 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
       //   float max_surface_area = -1.;
       //   for (uint i=0; i<edge_to_triangle[edge_id].size(); i++) {
 
-      //     if (node_association[edge_to_triangle[edge_id][i]] != -1) {
-      //       uint node_idx2 = node_association[edge_to_triangle[edge_id][i]];
+      //     if (node_face_association_[edge_to_triangle[edge_id][i]] != -1) {
+      //       uint node_idx2 = node_face_association_[edge_to_triangle[edge_id][i]];
       //       adj_mat[node_idx*nodes_nb_ + node_idx2] = true;
       //       adj_mat[node_idx2*nodes_nb_ + node_idx] = true;
       //     }
@@ -294,16 +295,35 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   } // for each node
 
   // Fill in the adjacency map
-  for (uint i=0; i<node_association.size(); i++) {
-    for (uint ni=0; ni<node_association[i].size(); ni++) {
-      int node_idx1 = node_association[i][ni];
-      for (uint nj=ni+1; nj<node_association[i].size(); nj++) {
-        int node_idx2 = node_association[i][nj];
+  for (uint i=0; i<node_face_association_.size(); i++) {
+    for (uint ni=0; ni<node_face_association_[i].size(); ni++) {
+      int node_idx1 = node_face_association_[i][ni];
+      for (uint nj=ni+1; nj<node_face_association_[i].size(); nj++) {
+        int node_idx2 = node_face_association_[i][nj];
         adj_mat[node_idx1*nodes_nb_ + node_idx2] = true;
         adj_mat[node_idx2*nodes_nb_ + node_idx1] = true;
       }
     }
   }
+
+
+  // TODO =====================================================================
+  // Fill in the vertex to node association
+  node_vertex_association_.resize(pc_->points.size());
+  for (uint i=0; i<node_vertex_association_.size(); i++)
+    node_vertex_association_[i].resize(nodes_nb_, false);
+
+  for (uint i=0; i<node_face_association_.size(); i++) {
+    for (uint j=0; j<3; j++) {
+      uint vertex_idx = mesh_->polygons[i].vertices[j];
+      for (uint k=0; k<node_face_association_[i].size(); k++) {
+        uint node_idx = node_face_association_[i][k];
+        node_vertex_association_[vertex_idx][node_idx] = true;
+      }
+    }
+  }
+
+  // \TODO =====================================================================
 
   // Update the valid indices vector
   for (uint i=0; i < sampled_indices_.size(); i++) {
@@ -627,7 +647,7 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::sphNodeFeatures(double** result, uint image_size, SphParams sph_params) {
+void GraphConstructor::sphNodeFeatures(double** result, int* tconv_idx, uint image_size, uint num_channels, SphParams sph_params) {
   ScopeTime t("SPH features computation", debug_);
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
@@ -637,6 +657,7 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, SphPara
     Eigen::MatrixXi F;
     Eigen::MatrixXd V_uv;
     Eigen::Matrix3d rf;
+    std::vector<uint> vertex_idx_mapping;
 
 
     {
@@ -654,9 +675,11 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, SphPara
 
       // Re-map vertices of the subset to 0-vertices_nb to re-index the triangles properly
       std::unordered_map<uint, uint> reverse_vertex_idx;
+      vertex_idx_mapping.resize(vertex_subset.size());
       uint new_idx = 0;
       for (auto vertex_idx : vertex_subset) {
         reverse_vertex_idx[vertex_idx] = new_idx;
+        vertex_idx_mapping[new_idx] = vertex_idx;
         new_idx++;
       }
 
@@ -753,14 +776,53 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, SphPara
 
       // Scale the uv
       V_uv *= 5;
-    } // LSCM computation
 
-    if (std::isnan(V_uv(0,0)) || std::isnan(V_uv(1,0)) || std::isnan(V_uv(2,0)) ) {
-      if (debug_)
-        std::cout << "Something's rotten in V_uville" << std::endl;
-      valid_indices_[node_idx] = false;
-      continue;
-    }
+      if (std::isnan(V_uv(0,0)) || std::isnan(V_uv(1,0)) || std::isnan(V_uv(2,0)) ) {
+        if (debug_)
+          std::cout << "Something's rotten in V_uville" << std::endl;
+        valid_indices_[node_idx] = false;
+        continue;
+      }
+
+
+      // ScopeTime t("Surface indices computation", debug_);
+      if (sph_params.tconv_idx) {
+        std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
+        uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
+
+        for (uint grid_idx=0; grid_idx<8; grid_idx++) {
+          for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
+            uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
+            uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
+
+            for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
+              if (neigh_node_idx == node_idx)
+                continue;
+
+              if (node_vertex_association_[cur_vertex][neigh_node_idx])
+                node_boundary_votes[grid_idx][neigh_node_idx]++;
+            }
+          }
+        }
+
+        tconv_idx[node_idx*9 + 4] = node_idx;
+
+        for (uint i=0; i<8; i++) {
+          int neigh_idx = node_idx;
+          int max_votes = 0;
+          for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
+            if (node_boundary_votes[i][node_idx] > max_votes) {
+              max_votes = node_boundary_votes[i][node_idx];
+              neigh_idx = node_idx;
+            }
+          }
+          if (i < 4)
+            tconv_idx[node_idx*9 + i] = neigh_idx;
+          else
+            tconv_idx[node_idx*9 + i + 1] = neigh_idx;
+        }
+      }
+    } // LSCM computation
 
 
 
@@ -844,47 +906,47 @@ void GraphConstructor::sphNodeFeatures(double** result, uint image_size, SphPara
             continue;
 
           uint face_idx = I_face_idx(i, j);
-          uint num_channels = 0;
+          uint cur_channel = 0;
 
           if (sph_params.mask) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = image_mask(i, j);
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = image_mask(i, j);
+            cur_channel++;
           }
           if (sph_params.plane_distance) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Vpd(F(face_idx, 0))
-                                                                  + W1(i, j)*Vpd(F(face_idx, 1))
-                                                                  + W2(i, j)*Vpd(F(face_idx, 2));
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vpd(F(face_idx, 0))
+                                                                                       + W1(i, j)*Vpd(F(face_idx, 1))
+                                                                                       + W2(i, j)*Vpd(F(face_idx, 2));
+            cur_channel++;
           }
           if (sph_params.euclidean_distance) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Ved(F(face_idx, 0), 2)
-                                                                  + W1(i, j)*Ved(F(face_idx, 1), 2)
-                                                                  + W2(i, j)*Ved(F(face_idx, 2), 2);
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Ved(F(face_idx, 0), 2)
+                                                                                       + W1(i, j)*Ved(F(face_idx, 1), 2)
+                                                                                       + W2(i, j)*Ved(F(face_idx, 2), 2);
+            cur_channel++;
           }
           if (sph_params.z_height) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*V(F(face_idx, 0), 2)
-                                                                  + W1(i, j)*V(F(face_idx, 1), 2)
-                                                                  + W2(i, j)*V(F(face_idx, 2), 2);
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*V(F(face_idx, 0), 2)
+                                                                                       + W1(i, j)*V(F(face_idx, 1), 2)
+                                                                                       + W2(i, j)*V(F(face_idx, 2), 2);
+            cur_channel++;
           }
           if (sph_params.z_rel) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*V_centered(F(face_idx, 0), 2)
-                                                                  + W1(i, j)*V_centered(F(face_idx, 1), 2)
-                                                                  + W2(i, j)*V_centered(F(face_idx, 2), 2);
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*V_centered(F(face_idx, 0), 2)
+                                                                                       + W1(i, j)*V_centered(F(face_idx, 1), 2)
+                                                                                       + W2(i, j)*V_centered(F(face_idx, 2), 2);
+            cur_channel++;
           }
           if (sph_params.x_coords) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Vxc(F(face_idx, 0))
-                                                                  + W1(i, j)*Vxc(F(face_idx, 1))
-                                                                  + W2(i, j)*Vxc(F(face_idx, 2));
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vxc(F(face_idx, 0))
+                                                                                       + W1(i, j)*Vxc(F(face_idx, 1))
+                                                                                       + W2(i, j)*Vxc(F(face_idx, 2));
+            cur_channel++;
           }
           if (sph_params.y_coords) {
-            result[node_idx][i*image_size*3 + j*3 + num_channels] = W0(i, j)*Vyc(F(face_idx, 0))
-                                                                  + W1(i, j)*Vyc(F(face_idx, 1))
-                                                                  + W2(i, j)*Vyc(F(face_idx, 2));
-            num_channels++;
+            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vyc(F(face_idx, 0))
+                                                                                       + W1(i, j)*Vyc(F(face_idx, 1))
+                                                                                       + W2(i, j)*Vyc(F(face_idx, 2));
+            cur_channel++;
           }
         }
       } // Writing the features into the result image

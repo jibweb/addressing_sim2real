@@ -41,4 +41,5 @@ struct SphParams {
   bool z_rel=false;
   bool x_coords=false;
   bool y_coords=false;
+  bool tconv_idx=false;
 };

@@ -19,8 +19,8 @@ protected:
   pcl::PolygonMesh::Ptr mesh_;
   pcl::search::KdTree<PointT>::Ptr tree_;
   std::vector<std::vector<int> > nodes_elts_;
-  std::vector<std::unordered_map<uint, std::vector<uint> > > node_surface_tree_;
-  std::vector<std::unordered_map<uint, uint> > node_surface_tree_depth_;
+  std::vector<std::vector<int> > node_face_association_;
+  std::vector<std::vector<bool> > node_vertex_association_;
   std::vector<std::vector<int> > adj_list_;
   std::vector<int> sampled_indices_;
   std::vector<bool> valid_indices_;
@@ -67,7 +67,7 @@ public:
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);
   // void esf3dNodeFeatures(double** result);
   void coordsSetNodeFeatures(double** result, unsigned int feat_nb);
-  void sphNodeFeatures(double** result, uint image_size, SphParams sph_params);
+  void sphNodeFeatures(double** result, int* tconv_idx, uint image_size, uint num_channels, SphParams sph_params);
 
   // Adjacency matrix construction method
   void fullConnectionAdjacency(double* adj_mat);

@@ -7,7 +7,7 @@ from py_graph_construction import PyGraph  # get_graph, get_graph_nd
 
 
 VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF SPH")
-EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z COORDS")
+EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z COORDS TCONV")
 
 
 # Graph structure
@@ -125,8 +125,12 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
     if p.feat_type == vertex_feat.L_ESF.name:
         node_feats = gc.node_features_l_esf(p.feat_nb)
     elif p.feat_type == vertex_feat.SPH.name:
-        node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
-                                          sph_config=p.feat_config)
+        if p.edge_feat_type == edge_feat.TCONV.name:
+            node_feats, edge_feats = gc.node_features_sph_tconv_idx(
+                image_size=p.feat_nb[0], sph_config=p.feat_config)
+        else:
+            node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
+                                              sph_config=p.feat_config)
 
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()

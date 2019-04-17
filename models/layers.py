@@ -254,3 +254,24 @@ def g_2d_k(tens_in, scope, out_sz, is_training, bn_decay, reg_constant):
                         bn_decay=bn_decay,
                         scope='bn')
         return tf.nn.relu(g_k_norm)
+
+
+def point_conv(name, input_tensor, index_tensor, filter_size,
+               out_channels, stddev=0.05, extra_chan=None):
+    with tf.variable_scope(name):
+        in_channels = input_tensor.get_shape()[-1].value
+        W = tf.get_variable('W', [1, filter_size, in_channels, out_channels],
+                            initializer=tf.contrib.layers.xavier_initializer(True))
+        b = tf.get_variable('b', [out_channels],
+                            initializer=tf.constant_initializer(0.01))
+        conv_input = tf.gather_nd(input_tensor,
+                                  tf.expand_dims(index_tensor, axis=2))
+        if extra_chan is not None:
+            conv_input = tf.concat([conv_input,
+                                    tf.expand_dims(extra_chan, axis=2)],
+                                   axis=2)
+        conv_input = tf.expand_dims(conv_input, axis=0)
+        conv_output = tf.nn.conv2d(conv_input, W, strides=[1, 1, 1, 1],
+                                   padding='VALID')
+        conv_output = tf.nn.bias_add(conv_output, b)
+        return tf.squeeze(conv_output, [0, 2])
