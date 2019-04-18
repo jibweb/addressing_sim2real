@@ -68,6 +68,7 @@ public:
   // void esf3dNodeFeatures(double** result);
   void coordsSetNodeFeatures(double** result, unsigned int feat_nb);
   void sphNodeFeatures(double** result, int* tconv_idx, uint image_size, uint num_channels, SphParams sph_params);
+  void pointProjNodeFeatures(double** result, int* tconv_idx, uint image_size);
 
   // Adjacency matrix construction method
   void fullConnectionAdjacency(double* adj_mat);

@@ -39,6 +39,9 @@ class Model(object):
                                             name="valid_pts")
 
             self.num_channels = sum(p.feat_config.values())
+            if p.feat_config["lscm"]:
+                self.num_channels -= 1
+
             self.node_feats = tf.placeholder(tf.float32,
                                              (None,
                                               p.nodes_nb,

@@ -97,73 +97,7 @@ void bresenham_line(int x0, int y0, int x1, int y1, std::vector<int> & min_y, st
 }
 
 
-void find_center_triangle(Eigen::MatrixXd & V,
-                          Eigen::MatrixXi & F,
-                          Eigen::MatrixXd & V_uv,
-                          Eigen::Vector3d & vcenter,
-                          uint & center_tri_idx) {
-  double max_u = -50.;
-  double min_u = 50.;
-  double max_v = -50.;
-  double min_v = 50.;
-  for (uint i=0; i<V_uv.rows(); i++) {
-    if (V_uv(i,0) > max_u) {
-      max_u = V_uv(i,0);
-    }
-    if (V_uv(i,0) < min_u) {
-      min_u = V_uv(i,0);
-    }
-    if (V_uv(i,1) > max_v) {
-      max_v = V_uv(i,1);
-    }
-    if (V_uv(i,1) < min_v) {
-      min_v = V_uv(i,1);
-    }
-  }
-
-  double u_center_pt = (max_u + min_u) / 2;
-  double v_center_pt = (max_v + min_v) / 2;
-
-  for (uint face_idx=0; face_idx<F.rows(); face_idx++) {
-    double tri_max_u = std::max(V_uv(F(face_idx, 0), 0), std::max(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
-    double tri_min_u = std::min(V_uv(F(face_idx, 0), 0), std::min(V_uv(F(face_idx, 1), 0), V_uv(F(face_idx, 2), 0)));
-    if ((u_center_pt > tri_max_u) || (u_center_pt < tri_min_u))
-      continue;
-
-    double tri_max_v = std::max(V_uv(F(face_idx, 0), 1), std::max(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
-    double tri_min_v = std::min(V_uv(F(face_idx, 0), 1), std::min(V_uv(F(face_idx, 1), 1), V_uv(F(face_idx, 2), 1)));
-    if ((v_center_pt > tri_max_v) || (v_center_pt < tri_min_v))
-      continue;
-
-    // Center point is within the bounding box. Now check if it's in the triangle
-    double w0 = edgeFunction(V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                             V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
-                             u_center_pt, v_center_pt);
-    double w1 = edgeFunction(V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1),
-                             V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                             u_center_pt, v_center_pt);
-    double w2 = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                             V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                             u_center_pt, v_center_pt);
-
-    if ((w0 < 0. && w1 < 0. && w2 < 0.) || (w0 > 0. && w1 > 0. && w2 > 0.)) {
-      center_tri_idx = face_idx;
-      double area = edgeFunction(V_uv(F(face_idx,0), 0), V_uv(F(face_idx,0), 1),
-                                 V_uv(F(face_idx,1), 0), V_uv(F(face_idx,1), 1),
-                                 V_uv(F(face_idx,2), 0), V_uv(F(face_idx,2), 1));
-      w0 /= area;
-      w1 /= area;
-      w2 /= area;
-
-      vcenter = fabs(w0)*V.row(F(face_idx,0)) + fabs(w1)*V.row(F(face_idx,1)) + fabs(w2)*V.row(F(face_idx,2));
-      break;
-    }
-  }
-}
-
-
-void rasterize(const Eigen::MatrixXd & V,
-               const Eigen::MatrixXi & F,
+void rasterize(const Eigen::MatrixXi & F,
                const Eigen::MatrixXd & V_uv,
                const Eigen::VectorXd & V_z,
                Eigen::MatrixXd & W0,
@@ -171,25 +105,9 @@ void rasterize(const Eigen::MatrixXd & V,
                Eigen::MatrixXd & W2,
                Eigen::MatrixXi & I_face_idx,
                Eigen::MatrixXd & image_mask,
-               const uint image_size) {
-  double max_u = -50.;
-  double min_u = 50.;
-  double max_v = -50.;
-  double min_v = 50.;
-  for (uint i=0; i<V_uv.rows(); i++) {
-    if (V_uv(i,0) > max_u) {
-      max_u = V_uv(i,0);
-    }
-    if (V_uv(i,0) < min_u) {
-      min_u = V_uv(i,0);
-    }
-    if (V_uv(i,1) > max_v) {
-      max_v = V_uv(i,1);
-    }
-    if (V_uv(i,1) < min_v) {
-      min_v = V_uv(i,1);
-    }
-  }
+               const uint image_size,
+               const double min_px,
+               const double max_px) {
 
   Eigen::MatrixXd Z_buffer = Eigen::MatrixXd::Constant(image_size+1, image_size+1, -1.e3);
 
@@ -201,10 +119,18 @@ void rasterize(const Eigen::MatrixXd & V,
     std::vector<int> vx(3);
     std::vector<int> vy(3);
 
+    if (V_uv(F(face_idx, 0), 0) < min_px || V_uv(F(face_idx, 0), 0) > max_px ||
+        V_uv(F(face_idx, 0), 1) < min_px || V_uv(F(face_idx, 0), 1) > max_px ||
+        V_uv(F(face_idx, 1), 0) < min_px || V_uv(F(face_idx, 1), 0) > max_px ||
+        V_uv(F(face_idx, 1), 1) < min_px || V_uv(F(face_idx, 1), 1) > max_px ||
+        V_uv(F(face_idx, 2), 0) < min_px || V_uv(F(face_idx, 2), 0) > max_px ||
+        V_uv(F(face_idx, 2), 1) < min_px || V_uv(F(face_idx, 2), 1) > max_px)
+        continue;
+
     // Get the pixel boundaries of the triangle
     for (uint i=0; i<3; i++) {
-      vx[i] = image_size * (V_uv(F(face_idx, i), 0) - min_u) / (max_u - min_u);
-      vy[i] = image_size * (V_uv(F(face_idx, i), 1) - min_v) / (max_v - min_v);
+      vx[i] = image_size * (V_uv(F(face_idx, i), 0) - min_px) / (max_px - min_px);
+      vy[i] = image_size * (V_uv(F(face_idx, i), 1) - min_px) / (max_px - min_px);
 
       if (vx[i] < min_x)
         min_x = vx[i];

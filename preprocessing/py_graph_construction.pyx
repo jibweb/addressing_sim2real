@@ -21,6 +21,7 @@ cdef extern from "graph_construction.h":
         bint x_coords
         bint y_coords
         bint tconv_idx
+        bint lscm
     ctypedef struct Parameters:
         # Graph structure
         # unsigned int nodes_nb
@@ -60,6 +61,7 @@ cdef extern from "graph_construction.h":
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
         void sphNodeFeatures(double** result, int* tconv_idx, unsigned int image_size,  unsigned int num_channels, SphParams)
+        void pointProjNodeFeatures(double** result, int* tconv_idx, unsigned int image_size)
 
         # Adjacency construction
         void fullConnectionAdjacency(double* adj_mat)
@@ -137,6 +139,8 @@ cdef class PyGraph:
         """
         num_channels = 0
         for key, val in sph_config.iteritems():
+            if key == "lscm":
+                continue
             if val:
                 num_channels += 1
 
@@ -148,6 +152,7 @@ cdef class PyGraph:
         config_struct.z_rel = sph_config["z_rel"]
         config_struct.x_coords = sph_config["x_coords"]
         config_struct.y_coords = sph_config["y_coords"]
+        config_struct.lscm = sph_config["lscm"]
         config_struct.tconv_idx = False
 
         cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
@@ -171,6 +176,8 @@ cdef class PyGraph:
         """
         num_channels = 0
         for key, val in sph_config.iteritems():
+            if key == "lscm":
+                continue
             if val:
                 num_channels += 1
 
@@ -181,7 +188,7 @@ cdef class PyGraph:
         config_struct.z_height = sph_config["z_height"]
         config_struct.z_rel = sph_config["z_rel"]
         config_struct.x_coords = sph_config["x_coords"]
-        config_struct.y_coords = sph_config["y_coords"]
+        config_struct.lscm = sph_config["lscm"]
         config_struct.tconv_idx = True
 
         cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
@@ -198,6 +205,27 @@ cdef class PyGraph:
 
         self.c_graph.sphNodeFeatures(node_feats2d_ptr, &tconv_indices[0, 0],
                                      image_size, num_channels, config_struct)
+        return node_feats2d, tconv_indices
+
+    def node_features_pt_proj_tconv_idx(self, image_size):
+        """
+        """
+        num_channels = 2
+        cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
+        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
+                                                                        dtype=np.int32)
+        node_feats2d = []
+        cdef np.ndarray[double, ndim=3, mode="c"] tmp
+        arr_shape = [image_size, image_size, num_channels]
+
+        for i in range(self.nodes_nb):
+            tmp = np.zeros(arr_shape, dtype=np.float64)
+            node_feats2d_ptr[i] = &tmp[0, 0, 0]
+            node_feats2d.append(tmp)
+
+        self.c_graph.pointProjNodeFeatures(node_feats2d_ptr,
+                                           &tconv_indices[0, 0],
+                                           image_size)
         return node_feats2d, tconv_indices
 
     def adjacency_full_connection(self):

@@ -44,6 +44,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   // std::cout << "A0 " << (static_cast<double> (((boost::posix_time::microsec_clock::local_time () - start_time_).total_milliseconds ()))) << std::endl;
 
   pcl::fromPCLPointCloud2(mesh_->cloud, *pc_);
+  tree_->setInputCloud (pc_);
 
   if (debug_) {
     std::cout << "PolygonMesh: " << mesh_->polygons.size() << " triangles" << std::endl;
@@ -652,122 +653,100 @@ void GraphConstructor::sphNodeFeatures(double** result, int* tconv_idx, uint ima
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 
-    Eigen::MatrixXd V;
-    Eigen::MatrixXd V_centered;
-    Eigen::MatrixXi F;
-    Eigen::MatrixXd V_uv;
-    Eigen::Matrix3d rf;
+    // --- SUBSET EXTRACTION --------------------------------------------------
     std::vector<uint> vertex_idx_mapping;
 
+    std::set<uint> vertex_subset;
+    for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
+      uint face_idx = nodes_elts_[node_idx][tri_idx];
 
-    {
-      // ScopeTime t("Subset extraction computation", debug_);
-      // --- SUBSET EXTRACTION --------------------------------------------------
-      // Extract the proper vertex subset corresponding to our face subset
-      std::set<uint> vertex_subset;
-      for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
-        uint face_idx = nodes_elts_[node_idx][tri_idx];
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
+    }
 
-        vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
-        vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
-        vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
-      }
+    // Re-map vertices of the subset to 0-vertices_nb to re-index the triangles properly
+    std::unordered_map<uint, uint> reverse_vertex_idx;
+    vertex_idx_mapping.resize(vertex_subset.size());
+    uint new_idx = 0;
+    for (auto vertex_idx : vertex_subset) {
+      reverse_vertex_idx[vertex_idx] = new_idx;
+      vertex_idx_mapping[new_idx] = vertex_idx;
+      new_idx++;
+    }
 
-      // Re-map vertices of the subset to 0-vertices_nb to re-index the triangles properly
-      std::unordered_map<uint, uint> reverse_vertex_idx;
-      vertex_idx_mapping.resize(vertex_subset.size());
-      uint new_idx = 0;
-      for (auto vertex_idx : vertex_subset) {
-        reverse_vertex_idx[vertex_idx] = new_idx;
-        vertex_idx_mapping[new_idx] = vertex_idx;
-        new_idx++;
-      }
 
-      // --- LibIGL setup ---------------------------------------------------------
-      V.resize(vertex_subset.size(), 3);
-      F.resize(nodes_elts_[node_idx].size(), 3);
+    // --- V F setup ----------------------------------------------------------
+    Eigen::MatrixXd V;
+    Eigen::MatrixXi F;
+    V.resize(vertex_subset.size(), 3);
+    F.resize(nodes_elts_[node_idx].size(), 3);
 
+    // Fill in V
+    uint v_idx=0;
+    for (auto vertex_idx : vertex_subset) {
+      V(v_idx,0) = pc_->points[vertex_idx].x;
+      V(v_idx,1) = pc_->points[vertex_idx].y;
+      V(v_idx,2) = pc_->points[vertex_idx].z;
+      v_idx++;
+    }
+
+    // Fill in F
+    for (uint loop_idx=0; loop_idx < nodes_elts_[node_idx].size(); loop_idx++) {
+      uint face_idx = nodes_elts_[node_idx][loop_idx];
+      F(loop_idx, 0) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[0]];
+      F(loop_idx, 1) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[1]];
+      F(loop_idx, 2) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[2]];
+    }
+
+
+    // --- LRF COMPUTATION ----------------------------------------------------
+    Eigen::MatrixXd V_centered;
+    Eigen::Matrix3d rf;
+    V_centered = V.rowwise() - V.colwise().mean();
+    Eigen::MatrixXd cov = (V_centered.adjoint() * V_centered) / double(V.rows() - 1);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver (cov);
+
+    rf.row (0).matrix () = solver.eigenvectors().col (2);
+    rf.row (2).matrix () = solver.eigenvectors().col (0);
+    rf.row (1).matrix () = rf.row (2).cross (rf.row (0));
+
+    if (debug_)
+      igl::writePLY("./extracted_subset.ply", V, F);
+
+    // Fix two points on the boundary
+    Eigen::VectorXi bnd,b(2,1);
+    igl::boundary_loop(F,bnd);
+
+    if (bnd.size() == 0) {
       if (debug_)
-        std::cout << "Node " << node_idx << " / " << sampled_indices_.size()
-                  << " | Node size (faces): " << nodes_elts_[node_idx].size() << " | "
-                  << "Vertex subset size: " << vertex_subset.size() << std::endl;
+        std::cout << "bnd.size() " << bnd.size() << std::endl;
 
-      // Fill in V
-      uint v_idx=0;
-      for (auto vertex_idx : vertex_subset) {
-        V(v_idx,0) = pc_->points[vertex_idx].x;
-        V(v_idx,1) = pc_->points[vertex_idx].y;
-        V(v_idx,2) = pc_->points[vertex_idx].z;
-        v_idx++;
+      valid_indices_[node_idx] = false;
+      continue;
+    }
+
+    int idx_min_val=-1, idx_max_val=-1;
+    double min_val=1e3, max_val=-1e3;
+    for (uint i=0; i<bnd.size(); i++) {
+      int idx = bnd(i);
+      if (V_centered.row(idx).dot(rf.row(0)) > max_val) {
+        max_val = V_centered.row(idx).dot(rf.row(0));
+        idx_max_val = idx;
       }
 
-      // Fill in F
-      for (uint loop_idx=0; loop_idx < nodes_elts_[node_idx].size(); loop_idx++) {
-        uint face_idx = nodes_elts_[node_idx][loop_idx];
-        F(loop_idx, 0) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[0]];
-        F(loop_idx, 1) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[1]];
-        F(loop_idx, 2) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[2]];
+      if (V_centered.row(idx).dot(rf.row(0)) < min_val) {
+        min_val = V_centered.row(idx).dot(rf.row(0));
+        idx_min_val = idx;
       }
-    } // Subset extraction computation
+    }
 
 
-    {
-      // ScopeTime t("LSCM computation", debug_);
-
-      // Get a local reference frame
-      V_centered = V.rowwise() - V.colwise().mean();
-      Eigen::MatrixXd cov = (V_centered.adjoint() * V_centered) / double(V.rows() - 1);
-      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver (cov);
-
-      rf.row (0).matrix () = solver.eigenvectors().col (2);
-      rf.row (2).matrix () = solver.eigenvectors().col (0);
-      rf.row (1).matrix () = rf.row (2).cross (rf.row (0));
-
-      if (debug_)
-        igl::writePLY("./extracted_subset.ply", V, F);
-
-      // Fix two points on the boundary
-      Eigen::VectorXi bnd,b(2,1);
-      igl::boundary_loop(F,bnd);
-
-      if (bnd.size() == 0) {
-        if (debug_)
-          std::cout << "bnd.size() " << bnd.size() << std::endl;
-
-        valid_indices_[node_idx] = false;
-        continue;
-      }
-
-      int idx_min_val=-1, idx_max_val=-1;
-      double min_val=1e3, max_val=-1e3;
-      for (uint i=0; i<bnd.size(); i++) {
-        int idx = bnd(i);
-        if (V.row(idx).dot(rf.row(0)) > max_val) {
-          max_val = V.row(idx).dot(rf.row(0));
-          idx_max_val = idx;
-        }
-
-        if (V.row(idx).dot(rf.row(0)) < min_val) {
-          min_val = V.row(idx).dot(rf.row(0));
-          idx_min_val = idx;
-        }
-      }
-
-      // for (uint i=0; i<V.rows(); i++) {
-      //   if (V(i, 2) > max_val) {
-      //     max_val = V(i, 2);
-      //     idx_max_val = i;
-      //   }
-
-      //   if (V(i, 2) < min_val) {
-      //     min_val = V(i, 2);
-      //     idx_min_val = i;
-      //   }
-      // }
-
-      b(0) = idx_min_val; //bnd(0);
-      // int idx_b1 = round(bnd.size()/2);
-      b(1) = idx_max_val; //bnd(idx_b1);
+    // --- LSCM COMPUTATION ---------------------------------------------------
+    Eigen::MatrixXd V_uv;
+    if (sph_params.lscm) {
+      b(0) = idx_min_val;
+      b(1) = idx_max_val;
       Eigen::MatrixXd bc(2,2);
       bc<<0,0,0,1;
 
@@ -783,177 +762,333 @@ void GraphConstructor::sphNodeFeatures(double** result, int* tconv_idx, uint ima
         valid_indices_[node_idx] = false;
         continue;
       }
+    }
 
 
-      // ScopeTime t("Surface indices computation", debug_);
-      if (sph_params.tconv_idx) {
-        std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
-        uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
+    // --- TCONV INDICES COMPUTATION ------------------------------------------
+    if (sph_params.tconv_idx) {
+      std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
+      uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
 
-        for (uint grid_idx=0; grid_idx<8; grid_idx++) {
-          for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
-            uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
-            uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
+      for (uint grid_idx=0; grid_idx<8; grid_idx++) {
+        for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
+          uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
+          uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
 
-            for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
-              if (neigh_node_idx == node_idx)
-                continue;
+          for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
+            if (neigh_node_idx == node_idx)
+              continue;
 
-              if (node_vertex_association_[cur_vertex][neigh_node_idx])
-                node_boundary_votes[grid_idx][neigh_node_idx]++;
-            }
+            if (node_vertex_association_[cur_vertex][neigh_node_idx])
+              node_boundary_votes[grid_idx][neigh_node_idx]++;
           }
         }
-
-        tconv_idx[node_idx*9 + 4] = node_idx;
-
-        for (uint i=0; i<8; i++) {
-          int neigh_idx = node_idx;
-          int max_votes = 0;
-          for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
-            if (node_boundary_votes[i][node_idx] > max_votes) {
-              max_votes = node_boundary_votes[i][node_idx];
-              neigh_idx = node_idx;
-            }
-          }
-          if (i < 4)
-            tconv_idx[node_idx*9 + i] = neigh_idx;
-          else
-            tconv_idx[node_idx*9 + i + 1] = neigh_idx;
-        }
-      }
-    } // LSCM computation
-
-
-
-    {
-      // ScopeTime t("Rasterizer computation", debug_);
-
-      // --- Finding out the center triangle of the map -----------------------
-      uint center_tri_idx = 0;
-      Eigen::Vector3d vcenter;
-      find_center_triangle(V, F, V_uv, vcenter, center_tri_idx);
-
-
-      // --- Vertices features computation ------------------------------------
-      Eigen::Vector3d vcenter0 = V.row(F(center_tri_idx, 0));
-      Eigen::Vector3d vcenter1 = V.row(F(center_tri_idx, 1));
-      Eigen::Vector3d vcenter2 = V.row(F(center_tri_idx, 2));
-
-      Eigen::Vector3d vcenter01 = vcenter0 - vcenter1;
-      Eigen::Vector3d vcenter02 = vcenter0 - vcenter2;
-
-      Eigen::Vector3d n_centertri = rf.row(2);
-      // Eigen::Vector3d n_centertri = vcenter01.cross(vcenter02);
-      // n_centertri.normalize();
-
-      // Get coordinates centered around the sample point
-      // Eigen::MatrixXd V_centered = V;
-      // V_centered.rowwise() -= vcenter.transpose();
-
-      // Compute the euclidean distance
-      Eigen::VectorXd Ved = V_centered.rowwise().lpNorm<2>();
-
-      // Compute the distance to the tangential plane
-      Eigen::VectorXd Vpd;
-      Vpd.resize(V.rows());
-      for (uint i=0; i<Vpd.rows(); i++) {
-        Vpd(i) = n_centertri.dot(V_centered.row(i));
       }
 
-      Eigen::VectorXd Vxc;
-      Vxc.resize(V.rows());
-      for (uint i=0; i<Vxc.rows(); i++) {
-        Vxc(i) = rf.row(0).dot(V_centered.row(i));
-      }
+      tconv_idx[node_idx*9 + 4] = node_idx;
 
-      Eigen::VectorXd Vyc;
-      Vyc.resize(V.rows());
-      for (uint i=0; i<Vyc.rows(); i++) {
-        Vyc(i) = rf.row(1).dot(V_centered.row(i));
-      }
-
-      // Eigen::Matrix<double, 2, 3> Pi_xyz;
-      // // Eigen::Matrix3d Pi_xyz;
-      // Pi_xyz << V_centered.row(F(center_tri_idx, 0)),
-      //           V_centered.row(F(center_tri_idx, 1));
-
-      // Eigen::Matrix2d Pi_uv;
-      // Pi_uv << V_uv.row(F(center_tri_idx, 0)),
-      //          V_uv.row(F(center_tri_idx, 1));
-      // // Pi_uv << V_uv.row(F(center_tri_idx, 0)), 0.,
-      // //          V_uv.row(F(center_tri_idx, 1)), 0.,
-      // //          V_uv.row(F(center_tri_idx, 2)), 0.;
-
-      // Eigen::Matrix<double, 2, 3> UVs = Pi_uv.inverse() * Pi_xyz;
-      // Eigen::Matrix3d UVs = Pi_uv.inverse() * Pi_xyz;
-
-
-      // --- Actual rasterization ---------------------------------------------
-      Eigen::MatrixXd W0 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-      Eigen::MatrixXd W1 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-      Eigen::MatrixXd W2 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-      Eigen::MatrixXi I_face_idx = Eigen::MatrixXi::Constant(image_size+1, image_size+1, -1);
-      Eigen::MatrixXd image_mask = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
-
-      rasterize(V, F, V_uv, W0, W1, W2, I_face_idx, image_mask, image_size);
-
-
-      // --- Compute feature image --------------------------------------------
-      for (uint i=0; i<image_size; i++) {
-        for (uint j=0; j<image_size; j++) {
-          if (!image_mask(i, j))
-            continue;
-
-          uint face_idx = I_face_idx(i, j);
-          uint cur_channel = 0;
-
-          if (sph_params.mask) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = image_mask(i, j);
-            cur_channel++;
-          }
-          if (sph_params.plane_distance) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vpd(F(face_idx, 0))
-                                                                                       + W1(i, j)*Vpd(F(face_idx, 1))
-                                                                                       + W2(i, j)*Vpd(F(face_idx, 2));
-            cur_channel++;
-          }
-          if (sph_params.euclidean_distance) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Ved(F(face_idx, 0), 2)
-                                                                                       + W1(i, j)*Ved(F(face_idx, 1), 2)
-                                                                                       + W2(i, j)*Ved(F(face_idx, 2), 2);
-            cur_channel++;
-          }
-          if (sph_params.z_height) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*V(F(face_idx, 0), 2)
-                                                                                       + W1(i, j)*V(F(face_idx, 1), 2)
-                                                                                       + W2(i, j)*V(F(face_idx, 2), 2);
-            cur_channel++;
-          }
-          if (sph_params.z_rel) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*V_centered(F(face_idx, 0), 2)
-                                                                                       + W1(i, j)*V_centered(F(face_idx, 1), 2)
-                                                                                       + W2(i, j)*V_centered(F(face_idx, 2), 2);
-            cur_channel++;
-          }
-          if (sph_params.x_coords) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vxc(F(face_idx, 0))
-                                                                                       + W1(i, j)*Vxc(F(face_idx, 1))
-                                                                                       + W2(i, j)*Vxc(F(face_idx, 2));
-            cur_channel++;
-          }
-          if (sph_params.y_coords) {
-            result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vyc(F(face_idx, 0))
-                                                                                       + W1(i, j)*Vyc(F(face_idx, 1))
-                                                                                       + W2(i, j)*Vyc(F(face_idx, 2));
-            cur_channel++;
+      for (uint i=0; i<8; i++) {
+        int neigh_idx = node_idx;
+        int max_votes = 0;
+        for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
+          if (node_boundary_votes[i][node_idx] > max_votes) {
+            max_votes = node_boundary_votes[i][node_idx];
+            neigh_idx = node_idx;
           }
         }
-      } // Writing the features into the result image
+        if (i < 4)
+          tconv_idx[node_idx*9 + i] = neigh_idx;
+        else
+          tconv_idx[node_idx*9 + i + 1] = neigh_idx;
+      }
+    }
 
-    } // Rasterizer scope
+
+    // --- RASTERIZATION ------------------------------------------------------
+    // Compute the distance to the tangential plane
+    Eigen::VectorXd Vpd = V_centered * rf.row(2).transpose();
+
+    Eigen::MatrixXd W0 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+    Eigen::MatrixXd W1 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+    Eigen::MatrixXd W2 = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+    Eigen::MatrixXi I_face_idx = Eigen::MatrixXi::Constant(image_size+1, image_size+1, -1);
+    Eigen::MatrixXd image_mask = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 0.);
+    Eigen::VectorXd V_z;
+
+    if (sph_params.lscm) {
+      V_z = Eigen::VectorXd::Constant(V_uv.rows(), 0.);
+    } else {
+      V_uv = V_centered * rf.block(0, 0, 2, 3).transpose();
+      V_z =  -Vpd;
+    }
+
+    double min_u = V_uv.col(0).minCoeff(), max_u = V_uv.col(0).maxCoeff();
+    double min_v = V_uv.col(1).minCoeff(), max_v = V_uv.col(1).maxCoeff();
+    double min_px=std::min(min_u, min_v), max_px=std::max(max_u, max_v);
+
+    rasterize(F, V_uv, V_z, W0, W1, W2, I_face_idx, image_mask, image_size, min_px, max_px);
+
+
+    // --- FEATURE IMAGE COMPUTATION ----------------------------------------
+    Eigen::VectorXd Ved, Vxc, Vyc;
+
+    // Compute the euclidean distance
+    if (sph_params.euclidean_distance)
+      Ved = V_centered.rowwise().lpNorm<2>();
+
+    if (sph_params.x_coords)
+      Vxc = V_centered * rf.row(0).transpose();
+
+    if (sph_params.y_coords)
+      Vyc = V_centered * rf.row(1).transpose();
+
+    for (uint i=0; i<image_size; i++) {
+      for (uint j=0; j<image_size; j++) {
+        if (!image_mask(i, j))
+          continue;
+
+        uint face_idx = I_face_idx(i, j);
+        uint cur_channel = 0;
+
+        if (sph_params.mask) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = image_mask(i, j);
+          cur_channel++;
+        }
+        if (sph_params.plane_distance) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vpd(F(face_idx, 0))
+                                                                                     + W1(i, j)*Vpd(F(face_idx, 1))
+                                                                                     + W2(i, j)*Vpd(F(face_idx, 2));
+          cur_channel++;
+        }
+        if (sph_params.euclidean_distance) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Ved(F(face_idx, 0), 2)
+                                                                                     + W1(i, j)*Ved(F(face_idx, 1), 2)
+                                                                                     + W2(i, j)*Ved(F(face_idx, 2), 2);
+          cur_channel++;
+        }
+        if (sph_params.z_height) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*V(F(face_idx, 0), 2)
+                                                                                     + W1(i, j)*V(F(face_idx, 1), 2)
+                                                                                     + W2(i, j)*V(F(face_idx, 2), 2);
+          cur_channel++;
+        }
+        if (sph_params.z_rel) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*V_centered(F(face_idx, 0), 2)
+                                                                                     + W1(i, j)*V_centered(F(face_idx, 1), 2)
+                                                                                     + W2(i, j)*V_centered(F(face_idx, 2), 2);
+          cur_channel++;
+        }
+        if (sph_params.x_coords) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vxc(F(face_idx, 0))
+                                                                                     + W1(i, j)*Vxc(F(face_idx, 1))
+                                                                                     + W2(i, j)*Vxc(F(face_idx, 2));
+          cur_channel++;
+        }
+        if (sph_params.y_coords) {
+          result[node_idx][i*image_size*num_channels + j*num_channels + cur_channel] = W0(i, j)*Vyc(F(face_idx, 0))
+                                                                                     + W1(i, j)*Vyc(F(face_idx, 1))
+                                                                                     + W2(i, j)*Vyc(F(face_idx, 2));
+          cur_channel++;
+        }
+      }
+    } // Writing the features into the result image
+
   } // for loop over each node
 } // GraphConstructor::sphNodeFeatures
+
+
+void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, uint image_size) {
+  ScopeTime t("Point Projection features computation", debug_);
+
+  for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
+    Eigen::MatrixXd V;
+    Eigen::MatrixXd V_centered;
+    Eigen::MatrixXi F;
+    std::vector<uint> vertex_idx_mapping;
+
+    // --- SUBSET EXTRACTION --------------------------------------------------
+    // Extract the proper vertex subset corresponding to our face subset
+    std::set<uint> vertex_subset;
+    for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
+      uint face_idx = nodes_elts_[node_idx][tri_idx];
+
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
+    }
+
+    // Re-map vertices of the subset to 0-vertices_nb to re-index the triangles properly
+    std::unordered_map<uint, uint> reverse_vertex_idx;
+    vertex_idx_mapping.resize(vertex_subset.size());
+    uint new_idx = 0;
+    for (auto vertex_idx : vertex_subset) {
+      reverse_vertex_idx[vertex_idx] = new_idx;
+      vertex_idx_mapping[new_idx] = vertex_idx;
+      new_idx++;
+    }
+
+    V.resize(vertex_subset.size(), 3);
+    F.resize(nodes_elts_[node_idx].size(), 3);
+
+    if (debug_)
+      std::cout << "Node " << node_idx << " / " << sampled_indices_.size()
+                << " | Node size (faces): " << nodes_elts_[node_idx].size() << " | "
+                << "Vertex subset size: " << vertex_subset.size() << std::endl;
+
+    // Fill in V
+    uint v_idx=0;
+    for (auto vertex_idx : vertex_subset) {
+      V(v_idx,0) = pc_->points[vertex_idx].x;
+      V(v_idx,1) = pc_->points[vertex_idx].y;
+      V(v_idx,2) = pc_->points[vertex_idx].z;
+      v_idx++;
+    }
+
+    // Fill in F
+    for (uint loop_idx=0; loop_idx < nodes_elts_[node_idx].size(); loop_idx++) {
+      uint face_idx = nodes_elts_[node_idx][loop_idx];
+      F(loop_idx, 0) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[0]];
+      F(loop_idx, 1) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[1]];
+      F(loop_idx, 2) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[2]];
+    }
+
+
+    // --- LRF COMPUTATION ----------------------------------------------------
+    Eigen::Matrix3d rf;
+    V_centered = V.rowwise() - V.colwise().mean();
+    Eigen::MatrixXd cov = (V_centered.adjoint() * V_centered) / double(V.rows() - 1);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver (cov);
+
+    rf.row (0).matrix () = solver.eigenvectors().col (2);
+    rf.row (2).matrix () = solver.eigenvectors().col (0);
+    rf.row (1).matrix () = rf.row (2).cross (rf.row (0));
+
+
+    // --- BOUNDARY LOOP EXTRACTION -------------------------------------------
+    Eigen::VectorXi bnd;
+    igl::boundary_loop(F,bnd);
+
+    if (bnd.size() == 0) {
+      if (debug_)
+        std::cout << "bnd.size() " << bnd.size() << std::endl;
+
+      valid_indices_[node_idx] = false;
+      continue;
+    }
+
+
+    // --- TCONV INDICES ------------------------------------------------------
+    std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
+    uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
+
+    int idx_min_val=-1, idx_max_val=-1;
+    double min_val=1e3, max_val=-1e3;
+    for (uint i=0; i<bnd.size(); i++) {
+      int idx = bnd(i);
+      if (V_centered.row(idx).dot(rf.row(0)) > max_val) {
+        max_val = V_centered.row(idx).dot(rf.row(0));
+        idx_max_val = idx;
+      }
+
+      if (V_centered.row(idx).dot(rf.row(0)) < min_val) {
+        min_val = V_centered.row(idx).dot(rf.row(0));
+        idx_min_val = idx;
+      }
+    }
+
+
+    for (uint grid_idx=0; grid_idx<8; grid_idx++) {
+      for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
+        uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
+        uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
+
+        for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
+          if (neigh_node_idx == node_idx)
+            continue;
+
+          if (node_vertex_association_[cur_vertex][neigh_node_idx])
+            node_boundary_votes[grid_idx][neigh_node_idx]++;
+        }
+      }
+    }
+
+    tconv_idx[node_idx*9 + 4] = node_idx;
+
+    for (uint i=0; i<8; i++) {
+      int neigh_idx = node_idx;
+      int max_votes = 0;
+      for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
+        if (node_boundary_votes[i][node_idx] > max_votes) {
+          max_votes = node_boundary_votes[i][node_idx];
+          neigh_idx = node_idx;
+        }
+      }
+      if (i < 4)
+        tconv_idx[node_idx*9 + i] = neigh_idx;
+      else
+        tconv_idx[node_idx*9 + i + 1] = neigh_idx;
+    }
+
+
+    // --- POINT TO PROJECT ---------------------------------------------------
+    // std::vector<int> k_indices;
+    // std::vector<float> k_sqr_distances;
+    // double eucl_neigh_size = 2*V_centered.rowwise().lpNorm<2>().maxCoeff();
+    // if (std::isnan(pc_->points[sampled_indices_[node_idx]].x))
+    //   continue;
+
+    // std::cout << "eucl_neigh_size: " << eucl_neigh_size << std::endl;
+
+    // tree_->radiusSearch(pc_->points[sampled_indices_[node_idx]],
+    //                     eucl_neigh_size, k_indices, k_sqr_distances);
+
+    // std::cout << "k_indices.size()" << k_indices.size() << std::endl;
+
+
+    // --- PROJECTION ---------------------------------------------------------
+    Eigen::VectorXd V_u = V_centered * rf.row(0).transpose();
+    Eigen::VectorXd V_v = V_centered * rf.row(1).transpose();
+    double min_u = V_u.minCoeff(), max_u = V_u.maxCoeff();
+    double min_v = V_v.minCoeff(), max_v = V_v.maxCoeff();
+    double min_px = std::min(min_u, min_v), max_px = std::max(max_u, max_v);
+
+    uint num_channels=2;
+
+
+    Eigen::MatrixXd Z_buffer = Eigen::MatrixXd::Constant(image_size+1, image_size+1, -1.e3);
+    // for (uint pt_idx=0; pt_idx<k_indices.size(); pt_idx++) {
+    //   PointT pt = pc_->points[k_indices[pt_idx]];
+    for (uint pt_idx=0; pt_idx<pc_->points.size(); pt_idx++) {
+      PointT pt = pc_->points[pt_idx];
+      if (std::isnan(pt.x))
+        continue;
+
+      Eigen::Vector3d coords = rf * pt.getVector3fMap().cast<double>();
+      coords(2) = -coords(2);
+
+      // if (coords(0) < min_u || coords(0) > max_u ||
+      //     coords(1) < min_v || coords(1) > max_v)
+      //   continue;
+
+      // uint u_px = image_size * (coords(0) - min_u) / (max_u - min_u);
+      // uint v_px = image_size * (coords(1) - min_v) / (max_v - min_v);
+
+      if (coords(0) < min_px || coords(0) > max_px ||
+          coords(1) < min_px || coords(1) > max_px)
+        continue;
+
+      uint u_px = image_size * (coords(0) - min_px) / (max_px - min_px);
+      uint v_px = image_size * (coords(1) - min_px) / (max_px - min_px);
+
+      if (coords(2) > Z_buffer(u_px, v_px) && coords(2) < 0.1) {
+        result[node_idx][u_px*image_size*num_channels + v_px*num_channels + 0] = 1.;
+        result[node_idx][u_px*image_size*num_channels + v_px*num_channels + 1] = coords(2);
+        Z_buffer(u_px, v_px) = coords(2);
+      }
+    }
+
+  } // -- for each node
+} // -- GraphConstructor::projNodeFeatures
 
 
 
