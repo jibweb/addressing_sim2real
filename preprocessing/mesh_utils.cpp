@@ -165,6 +165,7 @@ void find_center_triangle(Eigen::MatrixXd & V,
 void rasterize(const Eigen::MatrixXd & V,
                const Eigen::MatrixXi & F,
                const Eigen::MatrixXd & V_uv,
+               const Eigen::VectorXd & V_z,
                Eigen::MatrixXd & W0,
                Eigen::MatrixXd & W1,
                Eigen::MatrixXd & W2,
@@ -189,6 +190,8 @@ void rasterize(const Eigen::MatrixXd & V,
       min_v = V_uv(i,1);
     }
   }
+
+  Eigen::MatrixXd Z_buffer = Eigen::MatrixXd::Constant(image_size+1, image_size+1, -1.e3);
 
 
   // --- Rasterization ----------------------------------------------------
@@ -250,12 +253,19 @@ void rasterize(const Eigen::MatrixXd & V,
       }
 
       for (uint j=min_y[i]; j<max_y[i]; j++) {
-        image_mask((min_x + i), j) = 1.;
+        double z_interp = w0 * V_z(F(face_idx, 0))
+                        + w1 * V_z(F(face_idx, 1))
+                        + w2 * V_z(F(face_idx, 2));
+        if (z_interp > Z_buffer((min_x + i), j)) {
+          image_mask((min_x + i), j) = 1.;
 
-        W0((min_x + i), j) = (w0);
-        W1((min_x + i), j) = (w1);
-        W2((min_x + i), j) = (w2);
-        I_face_idx((min_x + i), j) = face_idx;
+          W0((min_x + i), j) = (w0);
+          W1((min_x + i), j) = (w1);
+          W2((min_x + i), j) = (w2);
+          I_face_idx((min_x + i), j) = face_idx;
+
+          Z_buffer((min_x + i), j) = z_interp;
+        }
 
         w0 += w0_stepy;
         w1 += w1_stepy;
