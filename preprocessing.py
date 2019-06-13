@@ -6,7 +6,7 @@ from utils.params import params as p
 from py_graph_construction import PyGraph  # get_graph, get_graph_nd
 
 
-VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF SPH")
+VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF SPH COORDSSET")
 EDGE_FEAT = Enum("EDGE_FEAT", "ROT_Z COORDS TCONV")
 
 
@@ -111,7 +111,7 @@ def preprocess_lesf(feats):
 
 #     return feats, adj, edge_feats, valid_indices
 
-def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
+def graph_preprocess_new(fn, p, edge_feat, vertex_feat, with_fn):
     gc = PyGraph(fn, nodes_nb=p.nodes_nb, debug=p.debug, gridsize=p.gridsize)
     # gc.initialize()
     # gc.sample_points(p.min_angle_z_normal)
@@ -131,16 +131,22 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat):
         else:
             node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
                                               sph_config=p.feat_config)
+    elif p.feat_type == vertex_feat.COORDSSET.name:
+        node_feats, edge_feats = gc.node_features_coords_set_tconv_idx(
+                p.feat_nb[0], p.feat_nb[1])
 
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()
 
     adj_mat = preprocess_adj_to_bias(adj_mat)
 
-    return node_feats, adj_mat, edge_feats, valid_indices
+    if with_fn:
+        return node_feats, adj_mat, edge_feats, valid_indices, fn
+    else:
+        return node_feats, adj_mat, edge_feats, valid_indices
 
 
-def get_graph_preprocessing_fn(p):
+def get_graph_preprocessing_fn(p, with_fn=False):
 
     edge_feat_names = [f.name for f in EDGE_FEAT]
     vertex_feat_names = [f.name for f in VERTEX_FEAT]
@@ -158,7 +164,8 @@ def get_graph_preprocessing_fn(p):
                         " Check the spelling of 'feat_type' parameter")
 
     return partial(graph_preprocess_new, p=p,
-                   edge_feat=EDGE_FEAT, vertex_feat=VERTEX_FEAT)
+                   edge_feat=EDGE_FEAT, vertex_feat=VERTEX_FEAT,
+                   with_fn=with_fn)
     # if p.feats_3d:
     #     if p.feat_nb == 4:
     #         return partial(graph_preprocess_3d, p=p,

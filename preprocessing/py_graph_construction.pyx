@@ -60,6 +60,7 @@ cdef extern from "graph_construction.h":
 
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
+        void coordsSetNodeFeatures(double** result, int* tconv_idx, unsigned int feat_nb, unsigned int num_channels)
         void sphNodeFeatures(double** result, int* tconv_idx, unsigned int image_size,  unsigned int num_channels, SphParams)
         void pointProjNodeFeatures(double** result, int* tconv_idx, unsigned int image_size)
 
@@ -226,6 +227,27 @@ cdef class PyGraph:
         self.c_graph.pointProjNodeFeatures(node_feats2d_ptr,
                                            &tconv_indices[0, 0],
                                            image_size)
+        return node_feats2d, tconv_indices
+
+    def node_features_coords_set_tconv_idx(self, feat_nb, num_channels):
+        """
+        """
+        cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
+        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
+                                                                        dtype=np.int32)
+        node_feats2d = []
+        cdef np.ndarray[double, ndim=2, mode="c"] tmp
+        arr_shape = [feat_nb, num_channels]
+
+        for i in range(self.nodes_nb):
+            tmp = np.zeros(arr_shape, dtype=np.float64)
+            node_feats2d_ptr[i] = &tmp[0, 0]
+            node_feats2d.append(tmp)
+
+        self.c_graph.coordsSetNodeFeatures(node_feats2d_ptr,
+                                           &tconv_indices[0, 0],
+                                           feat_nb,
+                                           num_channels)
         return node_feats2d, tconv_indices
 
     def adjacency_full_connection(self):

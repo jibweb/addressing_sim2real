@@ -5,6 +5,7 @@
 // #include <time>
 
 #include <boost/functional/hash.hpp>
+#include <pcl/common/pca.h>
 #include <pcl/conversions.h>
 #include <pcl/features/shot_lrf.h>
 #include <pcl/io/pcd_io.h>
@@ -308,6 +309,29 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   }
 
 
+  // --- Get the vertices associated with each node ---------------------------
+  nodes_vertices_.resize(nodes_nb_);
+  for (uint node_idx=0; node_idx<nodes_elts_.size(); node_idx++) {
+    std::set<uint> vertex_subset;
+    for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
+      uint face_idx = nodes_elts_[node_idx][tri_idx];
+
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
+    }
+
+    nodes_vertices_[node_idx].resize(vertex_subset.size());
+
+    uint new_idx = 0;
+    for (auto vertex_idx : vertex_subset) {
+      nodes_vertices_[node_idx][new_idx] = vertex_idx;
+      new_idx++;
+    }
+
+  }
+
+
   // TODO =====================================================================
   // Fill in the vertex to node association
   node_vertex_association_.resize(pc_->points.size());
@@ -332,6 +356,27 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     adj_mat[i*nodes_nb_ + i] = true;
   }
 }
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void GraphConstructor::computeLrf() {
+  lrf_.resize(nodes_elts_.size());
+
+  for (uint node_idx=0; node_idx<nodes_elts_.size(); node_idx++) {
+    if (nodes_vertices_[node_idx].size() < 3)
+      continue;
+
+    pcl::IndicesPtr indices(new std::vector<int>(nodes_vertices_[node_idx]));
+
+    pcl::PCA<PointT> pca;
+    pca.setInputCloud(pc_);
+    pca.setIndices(indices);
+
+    Eigen::Matrix3f eigvecs = pca.getEigenVectors();
+    lrf_[node_idx] = eigvecs.transpose();
+  }
+}
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::getValidIndices(int* valid_indices) {
@@ -622,29 +667,29 @@ void GraphConstructor::lEsfNodeFeatures(double** result, unsigned int feat_nb) {
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_nb) {
-  PointT p;
-  std::vector< int > k_indices;
-  std::vector< float > k_sqr_distances;
-  const uint sample_neigh_nb = feat_nb;
+// void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_nb) {
+//   PointT p;
+//   std::vector< int > k_indices;
+//   std::vector< float > k_sqr_distances;
+//   const uint sample_neigh_nb = feat_nb;
 
-  for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-    k_indices = nodes_elts_[pt_idx];
-    // tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
+//   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
+//     k_indices = nodes_elts_[pt_idx];
+//     // tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
 
-    for (uint index1=0; index1 < k_indices.size(); index1++) {
-      if (index1 >= sample_neigh_nb)
-        break;
+//     for (uint index1=0; index1 < k_indices.size(); index1++) {
+//       if (index1 >= sample_neigh_nb)
+//         break;
 
-      p = pc_->points[k_indices[index1]];
+//       p = pc_->points[k_indices[index1]];
 
-      // Fill in the matrix
-      result[pt_idx][3*index1 + 0] = p.x * 2. / gridsize_;
-      result[pt_idx][3*index1 + 1] = p.y * 2. / gridsize_;
-      result[pt_idx][3*index1 + 2] = p.z * 2. / gridsize_;
-    }
-  }
-}
+//       // Fill in the matrix
+//       result[pt_idx][3*index1 + 0] = p.x * 2. / gridsize_;
+//       result[pt_idx][3*index1 + 1] = p.y * 2. / gridsize_;
+//       result[pt_idx][3*index1 + 2] = p.z * 2. / gridsize_;
+//     }
+//   }
+// }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1089,6 +1134,192 @@ void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, ui
 
   } // -- for each node
 } // -- GraphConstructor::projNodeFeatures
+
+
+
+void GraphConstructor::coordsSetNodeFeatures(double** result, int* tconv_idx, uint feat_nb, uint num_channels) {
+  ScopeTime t("Coords Set features computation", debug_);
+
+
+  if (lrf_.size() == 0)
+    computeLrf();
+
+  for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
+    Eigen::MatrixXd V;
+    Eigen::MatrixXd V_centered;
+    Eigen::MatrixXi F;
+    std::vector<uint> vertex_idx_mapping;
+
+    // --- SUBSET EXTRACTION --------------------------------------------------
+    // Extract the proper vertex subset corresponding to our face subset
+    std::set<uint> vertex_subset;
+    for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
+      uint face_idx = nodes_elts_[node_idx][tri_idx];
+
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
+      vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
+    }
+
+    // Re-map vertices of the subset to 0-vertices_nb to re-index the triangles properly
+    std::unordered_map<uint, uint> reverse_vertex_idx;
+    vertex_idx_mapping.resize(vertex_subset.size());
+    uint new_idx = 0;
+    for (auto vertex_idx : vertex_subset) {
+      reverse_vertex_idx[vertex_idx] = new_idx;
+      vertex_idx_mapping[new_idx] = vertex_idx;
+      new_idx++;
+    }
+
+    V.resize(vertex_subset.size(), 3);
+    F.resize(nodes_elts_[node_idx].size(), 3);
+
+    if (debug_)
+      std::cout << "Node " << node_idx << " / " << sampled_indices_.size()
+                << " | Node size (faces): " << nodes_elts_[node_idx].size() << " | "
+                << "Vertex subset size: " << vertex_subset.size() << std::endl;
+
+    // Fill in V
+    uint v_idx=0;
+    for (auto vertex_idx : vertex_subset) {
+      V(v_idx,0) = pc_->points[vertex_idx].x;
+      V(v_idx,1) = pc_->points[vertex_idx].y;
+      V(v_idx,2) = pc_->points[vertex_idx].z;
+      v_idx++;
+    }
+
+    // Fill in F
+    for (uint loop_idx=0; loop_idx < nodes_elts_[node_idx].size(); loop_idx++) {
+      uint face_idx = nodes_elts_[node_idx][loop_idx];
+      F(loop_idx, 0) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[0]];
+      F(loop_idx, 1) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[1]];
+      F(loop_idx, 2) = reverse_vertex_idx[mesh_->polygons[face_idx].vertices[2]];
+    }
+
+
+    // --- LRF COMPUTATION ----------------------------------------------------
+    Eigen::Matrix3d rf;
+    V_centered = V.rowwise() - V.colwise().mean();
+    Eigen::MatrixXd cov = (V_centered.adjoint() * V_centered) / double(V.rows() - 1);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver (cov);
+
+    rf.row (0).matrix () = solver.eigenvectors().col (2);
+    rf.row (2).matrix () = solver.eigenvectors().col (0);
+    rf.row (1).matrix () = rf.row (2).cross (rf.row (0));
+
+
+    std::cout << "Look at that: \n" << lrf_[node_idx] << "\n\n"
+                                    << rf.cast<float>() << std::endl;
+
+
+
+    // --- BOUNDARY LOOP EXTRACTION -------------------------------------------
+    Eigen::VectorXi bnd;
+    igl::boundary_loop(F,bnd);
+
+    if (bnd.size() == 0) {
+      if (debug_)
+        std::cout << "bnd.size() " << bnd.size() << std::endl;
+
+      valid_indices_[node_idx] = false;
+      continue;
+    }
+
+
+    // --- TCONV INDICES ------------------------------------------------------
+    std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
+    uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
+
+    int idx_min_val=-1, idx_max_val=-1;
+    double min_val=1e3, max_val=-1e3;
+    for (uint i=0; i<bnd.size(); i++) {
+      int idx = bnd(i);
+      if (V_centered.row(idx).dot(rf.row(0)) > max_val) {
+        max_val = V_centered.row(idx).dot(rf.row(0));
+        idx_max_val = idx;
+      }
+
+      if (V_centered.row(idx).dot(rf.row(0)) < min_val) {
+        min_val = V_centered.row(idx).dot(rf.row(0));
+        idx_min_val = idx;
+      }
+    }
+
+
+    for (uint grid_idx=0; grid_idx<8; grid_idx++) {
+      for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
+        uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
+        uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
+
+        for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
+          if (neigh_node_idx == node_idx)
+            continue;
+
+          if (node_vertex_association_[cur_vertex][neigh_node_idx])
+            node_boundary_votes[grid_idx][neigh_node_idx]++;
+        }
+      }
+    }
+
+    tconv_idx[node_idx*9 + 4] = node_idx;
+
+    for (uint i=0; i<8; i++) {
+      int neigh_idx = node_idx;
+      int max_votes = 0;
+      for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
+        if (node_boundary_votes[i][node_idx] > max_votes) {
+          max_votes = node_boundary_votes[i][node_idx];
+          neigh_idx = node_idx;
+        }
+      }
+      if (i < 4)
+        tconv_idx[node_idx*9 + i] = neigh_idx;
+      else
+        tconv_idx[node_idx*9 + i + 1] = neigh_idx;
+    }
+
+
+
+    // --- PROJECTION ---------------------------------------------------------
+    Eigen::VectorXd V_xp = V_centered * rf.row(0).transpose();
+    Eigen::VectorXd V_yp = V_centered * rf.row(1).transpose();
+    Eigen::VectorXd V_zp = V_centered * rf.row(2).transpose();
+
+    //Eigen::VectorXd V_xp = V_centered.col(0);
+    //Eigen::VectorXd V_yp = V_centered.col(1);
+    //Eigen::VectorXd V_zp = V_centered.col(2);
+
+
+    uint feat_sampled_nb = 0;
+
+    if (debug_ && feat_sampled_nb > V_xp.rows())
+      std::cout << "Less points in the node than we expect to sample ..." << std::endl;
+
+    for (uint index=0; index < V_xp.rows(); index++) {
+      float rand_idx = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/V_xp.rows())) + 1;
+      if (rand_idx < feat_nb)
+        continue;
+
+      // Fill in the matrix
+      result[node_idx][num_channels*feat_sampled_nb + 0] = V_xp(index);
+      result[node_idx][num_channels*feat_sampled_nb + 1] = V_yp(index);
+      result[node_idx][num_channels*feat_sampled_nb + 2] = V_zp(index);
+
+      if (num_channels == 4) {
+        result[node_idx][num_channels*feat_sampled_nb + 3] = V_centered(index, 2);
+      }
+
+      feat_sampled_nb++;
+
+      // std::cout << feat_sampled_nb << std::endl;
+
+      if (feat_sampled_nb == feat_nb)
+        break;
+    }
+
+
+  } // -- for each node
+} // -- GraphConstructor::coordsNodeFeatures
 
 
 
