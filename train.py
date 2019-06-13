@@ -26,6 +26,8 @@ p.define("decay_steps", 10000)
 p.define("decay_rate", 0.96)
 p.define("val_set_pct", 0.1)
 
+p.define("comment", "")
+
 # Generic
 set_log_level("INFO")
 
@@ -93,14 +95,16 @@ if __name__ == "__main__":
         feat_compute = get_graph_preprocessing_fn(p)
 
         # --- Dataset setup ---------------------------------------------------
-        # regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
-        #     else "/*_full_wnormals_wattention.pcd"
-        pbalance_train_set = False if p.dataset == DATASETS.ScanNet \
-            else True
+        pregex = "/*_full_wnormals_wattention.ply" if p.dataset == DATASETS.ModelNet10  \
+            else "/*_bin.ply"
+        if p.dataset == DATASETS.ScanNet.name:
+            pregex = "/*.ply"
+        pbalance_train_set = True  # False if p.dataset == DATASETS.ScanNet.name \
+                        #    else True
         dataset = Dataset(batch_size=p.batch_size,
                           balance_train_set=pbalance_train_set,
-                          val_set_pct=p.val_set_pct)
-        #regex=regex)
+                          val_set_pct=p.val_set_pct,
+                          regex=pregex)
 
         # --- Model Setup -----------------------------------------------------
         model = Model()
@@ -159,6 +163,8 @@ if __name__ == "__main__":
         log("Setup finished, starting training now ... \n\n")
         print "Parameters:"
         print p, "\n"
+        print "pregex", pregex
+        print "pbalance_train_set", pbalance_train_set
 
         for epoch in range(start_epoch, p.max_epochs+1):
             # --- Training step -----------------------------------------------

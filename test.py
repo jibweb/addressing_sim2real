@@ -7,7 +7,7 @@ import os
 import sys
 import tensorflow as tf
 
-from dataset import get_dataset
+from dataset import get_dataset, DATASETS
 from models import get_model
 from preprocessing import get_graph_preprocessing_fn
 from utils.logger import log, set_log_level, TimeScope
@@ -55,15 +55,17 @@ if __name__ == "__main__":
             sys.exit()
 
     # --- Pre processing function setup ---------------------------------------
-    feat_compute = get_graph_preprocessing_fn(p)
+    feat_compute = get_graph_preprocessing_fn(p, with_fn=True)
 
     # --- Dataset setup -------------------------------------------------------
     Dataset, CLASS_DICT = get_dataset(p.dataset)
-    # regex = "/*_full_wnormals_wattention.ply" if p.mesh  \
-    #         else "/*_full_wnormals_wattention.pcd"
+    pregex = "/*_full_wnormals_wattention.ply" if p.dataset == DATASETS.ModelNet10.name  \
+        else "/*_bin.ply"
+    if p.dataset == DATASETS.ScanNet.name:
+        pregex = "/*.ply"
     dataset = Dataset(batch_size=p.batch_size,
-                      val_set_pct=p.val_set_pct)
-                     # regex=regex)
+                      val_set_pct=p.val_set_pct,
+                      regex=pregex)
 
     # --- Model Setup ---------------------------------------------------------
     Model = get_model(p.model)
@@ -105,14 +107,18 @@ if __name__ == "__main__":
         for repeat in range(TEST_REPEAT):
             for xs, ys in dataset.test_batch(process_fn=feat_compute):
                 with TimeScope("accuracy", debug_only=True):
-                    summary, acc, loss, cm = sess.run(
+                    summary, preds, acc, loss, cm = sess.run(
                         [merged,
+                         correct_prediction,
                          accuracy,
                          model.loss,
                          confusion],
                         feed_dict=model.get_feed_dict(xs, ys,
                                                       is_training=False))
                     test_writer.add_summary(summary, test_iter)
+
+                x_fns = np.array([x_i[-1] for x_i in xs])
+                misclassified_fns = x_fns[np.logical_not(preds)]
 
                 total_acc = (test_iter*total_acc + acc) / (test_iter + 1)
                 total_cm += cm
@@ -123,6 +129,7 @@ if __name__ == "__main__":
                     loss)
 
                 test_iter += 1
+
         print ""
         confmat_filename = "{}conf_matrix_{}".format(SAVE_DIR,
                                                      MODEL_CKPT.split("/")[0])
