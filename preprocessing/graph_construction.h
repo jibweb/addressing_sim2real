@@ -27,6 +27,7 @@ protected:
   std::vector<bool> valid_indices_;
   std::vector<std::vector<std::vector<int> > > lut_;
   std::vector<Eigen::Matrix3f> lrf_;
+  std::vector<Eigen::Vector3f> nodes_mean_;
   double scale_;
 
   // Parameters
@@ -35,6 +36,9 @@ protected:
   bool debug_;
 
   Parameters params_;
+
+
+  void computePcaLrf();
 
 public:
   GraphConstructor(std::string filename,
@@ -63,7 +67,6 @@ public:
   void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
-  void computeLrf();
   void vizMesh(double* adj_mat, bool viz_small_spheres);
 
   // Node features
@@ -80,4 +83,5 @@ public:
   // Edge features
   void coordsEdgeFeatures(double* edge_feats);
   void rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal);
+  void tconvEdgeFeatures(int* tconv_idx);
 };
