@@ -764,34 +764,12 @@ void GraphConstructor::lEsfNodeFeatures(double** result, unsigned int feat_nb) {
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// void GraphConstructor::coordsSetNodeFeatures(double** result, unsigned int feat_nb) {
-//   PointT p;
-//   std::vector< int > k_indices;
-//   std::vector< float > k_sqr_distances;
-//   const uint sample_neigh_nb = feat_nb;
-
-//   for (uint pt_idx=0; pt_idx<sampled_indices_.size(); pt_idx++) {
-//     k_indices = nodes_elts_[pt_idx];
-//     // tree_->radiusSearch(pc_->points[sampled_indices_[pt_idx]], params_.neigh_size, k_indices, k_sqr_distances);
-
-//     for (uint index1=0; index1 < k_indices.size(); index1++) {
-//       if (index1 >= sample_neigh_nb)
-//         break;
-
-//       p = pc_->points[k_indices[index1]];
-
-//       // Fill in the matrix
-//       result[pt_idx][3*index1 + 0] = p.x * 2. / gridsize_;
-//       result[pt_idx][3*index1 + 1] = p.y * 2. / gridsize_;
-//       result[pt_idx][3*index1 + 2] = p.z * 2. / gridsize_;
-//     }
-//   }
-// }
-
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::sphNodeFeatures(double** result, int* tconv_idx, uint image_size, uint num_channels, SphParams sph_params) {
   ScopeTime t("SPH features computation", debug_);
+
+  // Compute the TConv indices
+  if (sph_params.tconv_idx)
+    tconvEdgeFeatures(tconv_idx);
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 
@@ -907,45 +885,6 @@ void GraphConstructor::sphNodeFeatures(double** result, int* tconv_idx, uint ima
     }
 
 
-    // --- TCONV INDICES COMPUTATION ------------------------------------------
-    if (sph_params.tconv_idx) {
-      std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
-      uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
-
-      for (uint grid_idx=0; grid_idx<8; grid_idx++) {
-        for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
-          uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
-          uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
-
-          for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
-            if (neigh_node_idx == node_idx)
-              continue;
-
-            if (node_vertex_association_[cur_vertex][neigh_node_idx])
-              node_boundary_votes[grid_idx][neigh_node_idx]++;
-          }
-        }
-      }
-
-      tconv_idx[node_idx*9 + 4] = node_idx;
-
-      for (uint i=0; i<8; i++) {
-        int neigh_idx = node_idx;
-        int max_votes = 0;
-        for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
-          if (node_boundary_votes[i][node_idx] > max_votes) {
-            max_votes = node_boundary_votes[i][node_idx];
-            neigh_idx = node_idx;
-          }
-        }
-        if (i < 4)
-          tconv_idx[node_idx*9 + i] = neigh_idx;
-        else
-          tconv_idx[node_idx*9 + i + 1] = neigh_idx;
-      }
-    }
-
-
     // --- RASTERIZATION ------------------------------------------------------
     // Compute the distance to the tangential plane
     Eigen::VectorXd Vpd = V_centered * rf.row(2).transpose();
@@ -1039,8 +978,12 @@ void GraphConstructor::sphNodeFeatures(double** result, int* tconv_idx, uint ima
 } // GraphConstructor::sphNodeFeatures
 
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, uint image_size) {
   ScopeTime t("Point Projection features computation", debug_);
+
+  // Compute the TConv indices
+  tconvEdgeFeatures(tconv_idx);
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
     Eigen::MatrixXd V;
@@ -1104,72 +1047,6 @@ void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, ui
     rf.row (0).matrix () = solver.eigenvectors().col (2);
     rf.row (2).matrix () = solver.eigenvectors().col (0);
     rf.row (1).matrix () = rf.row (2).cross (rf.row (0));
-
-
-    // --- BOUNDARY LOOP EXTRACTION -------------------------------------------
-    Eigen::VectorXi bnd;
-    igl::boundary_loop(F,bnd);
-
-    if (bnd.size() == 0) {
-      if (debug_)
-        std::cout << "bnd.size() " << bnd.size() << std::endl;
-
-      valid_indices_[node_idx] = false;
-      continue;
-    }
-
-
-    // --- TCONV INDICES ------------------------------------------------------
-    std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
-    uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
-
-    int idx_min_val=-1, idx_max_val=-1;
-    double min_val=1e3, max_val=-1e3;
-    for (uint i=0; i<bnd.size(); i++) {
-      int idx = bnd(i);
-      if (V_centered.row(idx).dot(rf.row(0)) > max_val) {
-        max_val = V_centered.row(idx).dot(rf.row(0));
-        idx_max_val = idx;
-      }
-
-      if (V_centered.row(idx).dot(rf.row(0)) < min_val) {
-        min_val = V_centered.row(idx).dot(rf.row(0));
-        idx_min_val = idx;
-      }
-    }
-
-
-    for (uint grid_idx=0; grid_idx<8; grid_idx++) {
-      for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
-        uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
-        uint cur_vertex = vertex_idx_mapping[bnd(loop_idx)];
-
-        for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
-          if (neigh_node_idx == node_idx)
-            continue;
-
-          if (node_vertex_association_[cur_vertex][neigh_node_idx])
-            node_boundary_votes[grid_idx][neigh_node_idx]++;
-        }
-      }
-    }
-
-    tconv_idx[node_idx*9 + 4] = node_idx;
-
-    for (uint i=0; i<8; i++) {
-      int neigh_idx = node_idx;
-      int max_votes = 0;
-      for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
-        if (node_boundary_votes[i][node_idx] > max_votes) {
-          max_votes = node_boundary_votes[i][node_idx];
-          neigh_idx = node_idx;
-        }
-      }
-      if (i < 4)
-        tconv_idx[node_idx*9 + i] = neigh_idx;
-      else
-        tconv_idx[node_idx*9 + i + 1] = neigh_idx;
-    }
 
 
     // --- POINT TO PROJECT ---------------------------------------------------
