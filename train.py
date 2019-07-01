@@ -18,7 +18,7 @@ p.define("dataset", DATASETS.ModelNet40.name)
 p.define("num_classes", 40)
 p.define("model", MODELS.EFA_CoolPool.name)
 # Training parameters
-p.define("max_epochs", 500)
+p.define("max_epochs", 500, should_hash=False)
 p.define("batch_size", 32)
 p.define("learning_rate", 0.001)
 p.define("reg_constant", 0.01)
