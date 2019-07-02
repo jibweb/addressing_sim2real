@@ -14,7 +14,7 @@
 #include <pcl/visualization/pcl_visualizer.h>
 
 
-#define WITH_LIBIGL 0
+// #define WITH_LIBIGL 0
 #ifdef WITH_LIBIGL
   #include <igl/boundary_loop.h>
   #include <igl/lscm.h>
@@ -309,8 +309,6 @@ void GraphConstructor::areaBasedNodeSampling(float target_area) {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::extractNodeBoundaries(const uint node_idx, Eigen::VectorXi & bnd) {
-  ScopeTime t("Node Boundaries extraction computation", debug_);
-
   // --- Prepare the added vector ---------------------------------------------
   std::vector<bool> added(mesh_->polygons.size(), false);
   for (uint i=0; i<nodes_elts_[node_idx].size(); i++)
@@ -429,52 +427,11 @@ void GraphConstructor::extractNodeBoundaries(const uint node_idx, Eigen::VectorX
 
   } while (full_size < border_vertex.size());
 
-  std::cout << "Boundary loop vertices: " << boundary_loops[max_loop_idx].size() << " / " << full_size << " / " << border_vertex.size() << std::endl;
+  // std::cout << "Boundary loop vertices: " << boundary_loops[max_loop_idx].size() << " / " << full_size << " / " << border_vertex.size() << std::endl;
 
   bnd.resize(boundary_loops[max_loop_idx].size());
   for (uint i=0; i<boundary_loops[max_loop_idx].size(); i++)
     bnd(i) = boundary_loops[max_loop_idx][i];
-
-
-  // boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
-  // viewer->setBackgroundColor (0, 0, 0);
-  // pcl::PointCloud<pcl::PointXYZRGB>::Ptr viz_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-
-
-  // for (uint elt_idx=0; elt_idx<nodes_elts_[node_idx].size(); elt_idx++) {
-  //   uint tri_idx = nodes_elts_[node_idx][elt_idx];
-  //   for (uint i=0; i<3; i++) {
-  //     PointT p = pc_->points[mesh_->polygons[tri_idx].vertices[i]];
-  //     pcl::PointXYZRGB p2;
-  //     p2.r = 255;
-  //     p2.g = 0;
-  //     p2.b = 0;
-  //     p2.x = p.x;
-  //     p2.y = p.y;
-  //     p2.z = p.z;
-  //     viz_cloud->points.push_back(p2);
-  //   }
-  // }
-
-
-  // for (uint i=0; i<boundary_loops[max_loop_idx].size(); i++) {
-  //   pcl::PointXYZRGB p2;
-  //   p2.r = 0;
-  //   p2.g = 255;
-  //   p2.b = 0;
-  //   p2.x = pc_->points[boundary_loops[max_loop_idx][i]].x;
-  //   p2.y = pc_->points[boundary_loops[max_loop_idx][i]].y;
-  //   p2.z = pc_->points[boundary_loops[max_loop_idx][i]].z;
-  //   viz_cloud->points.push_back(p2);
-  // }
-
-
-  // pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(viz_cloud);
-  // viewer->addPointCloud<pcl::PointXYZRGB> (viz_cloud, rgb, "cloud");
-  // while (!viewer->wasStopped()) {
-  //   viewer->spinOnce(100);
-  // }
-
 }
 
 
@@ -665,47 +622,15 @@ void GraphConstructor::rotZEdgeFeatures(double* edge_feats, float min_angle_z_no
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
-#ifdef WITH_LIBIGL
   ScopeTime t("TConv edge features computation", debug_);
-
 
   if (lrf_.size() == 0)
     computePcaLrf();
 
   for (uint node_idx=0; node_idx < nodes_elts_.size(); node_idx++) {
 
-    // // Create the faces matrix
-    // std::unordered_map<uint, uint> reverse_vertex_idx;
-    // for (uint vert_idx=0; vert_idx < nodes_vertices_[node_idx].size(); vert_idx++) {
-    //   reverse_vertex_idx[nodes_vertices_[node_idx][vert_idx]] = vert_idx;
-    // }
-
-    // Eigen::MatrixXi F;
-    // F.resize(nodes_elts_[node_idx].size(), 3);
-    // for (uint tri_idx=0; tri_idx<nodes_elts_[node_idx].size(); tri_idx++) {
-    //   uint triangle = nodes_elts_[node_idx][tri_idx];
-    //   F(tri_idx, 0) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[0]];
-    //   F(tri_idx, 1) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[1]];
-    //   F(tri_idx, 2) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[2]];
-    // }
-
-
-    // // Get the boundary loop
-    // Eigen::VectorXi bnd;
-    // igl::boundary_loop(F,bnd);
-
-    // std::cout << "LIBIGL (" << bnd.rows() << ")" << std::endl;
-    // for (uint i=0; i<bnd.rows(); i++)
-    //   std::cout << nodes_vertices_[node_idx][bnd(i)] << ", ";
-    // std::cout << std::endl;
-
     Eigen::VectorXi bnd;
     extractNodeBoundaries(node_idx, bnd);
-
-    // std::cout << "MINE (" << bnd.rows() << ")" << std::endl;
-    // for (uint i=0; i<bnd.rows(); i++)
-    //   std::cout << bnd(i) << ", ";
-    // std::cout << std::endl;
 
     if (bnd.size() == 0) {
       if (debug_)
@@ -724,8 +649,6 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
     double max_val=-1e3;
     for (uint i=0; i<bnd.size(); i++) {
       int vert_idx = bnd(i);
-      // int idx = bnd(i);
-      // int vert_idx = nodes_vertices_[node_idx][idx];
       Eigen::Vector3f vertex = pc_->points[vert_idx].getVector3fMap();
 
       if (vertex.dot(lrf_[node_idx].row(0)) > max_val) {
@@ -769,7 +692,6 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
         tconv_idx[node_idx*9 + i + 1] = neigh_idx;
     }
   }
-#endif
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
