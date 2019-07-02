@@ -1188,37 +1188,32 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, int* tconv_idx, ui
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 
-    uint feat_sampled_nb = 0;
+    uint face_nb = nodes_elts_[node_idx].size();
+    for (uint feat_idx=0; feat_idx<feat_nb; feat_idx++) {
+      float rand_idx = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/face_nb));
 
-    uint vertex_nb = nodes_vertices_[node_idx].size();
+      float u = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX));
+      float v = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX));
+      float w = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX));
+      float uvw = u+v+w;
+      u /= uvw;
+      v /= uvw;
+      w /= uvw;
 
-    if (debug_ && feat_sampled_nb > vertex_nb)
-      std::cout << "Less points in the node than we expect to sample ..." << std::endl;
+      Eigen::Vector3f p0 = pc_->points[mesh_->polygons[nodes_elts_[node_idx][rand_idx]].vertices[0]].getVector3fMap();
+      Eigen::Vector3f p1 = pc_->points[mesh_->polygons[nodes_elts_[node_idx][rand_idx]].vertices[1]].getVector3fMap();
+      Eigen::Vector3f p2 = pc_->points[mesh_->polygons[nodes_elts_[node_idx][rand_idx]].vertices[2]].getVector3fMap();
 
-    for (uint index=0; index < vertex_nb; index++) {
-      float rand_idx = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/vertex_nb)) + 1;
-      if (rand_idx < feat_nb)
-        continue;
-
-      // Fill in the matrix
-      Eigen::Vector3f coords = pc_->points[nodes_vertices_[node_idx][index]].getVector3fMap();
+      Eigen::Vector3f coords = u*p0 + v*p1 + w*p2;
       Eigen::Vector3f proj_coords = lrf_[node_idx] * (coords - nodes_mean_[node_idx]);
 
-      result[node_idx][num_channels*feat_sampled_nb + 0] = proj_coords(0);
-      result[node_idx][num_channels*feat_sampled_nb + 1] = proj_coords(1);
-      result[node_idx][num_channels*feat_sampled_nb + 2] = proj_coords(2);
+      result[node_idx][num_channels*feat_idx + 0] = proj_coords(0);
+      result[node_idx][num_channels*feat_idx + 1] = proj_coords(1);
+      result[node_idx][num_channels*feat_idx + 2] = proj_coords(2);
 
-      if (num_channels == 4) {
-        result[node_idx][num_channels*feat_sampled_nb + 3] = coords(2);
-      }
-
-      feat_sampled_nb++;
-
-      if (feat_sampled_nb == feat_nb)
-        break;
+      if (num_channels == 4)
+        result[node_idx][num_channels*feat_idx + 3] = coords(2);
     }
-
-
   } // -- for each node
 } // -- GraphConstructor::coordsNodeFeatures
 
