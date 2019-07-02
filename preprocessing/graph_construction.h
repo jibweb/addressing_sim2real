@@ -17,10 +17,9 @@ protected:
   pcl::search::KdTree<PointT>::Ptr tree_;
   std::vector<std::vector<int> > nodes_elts_;
   std::vector<std::vector<int> > nodes_vertices_;
-  std::vector<std::vector<int> > boundary_faces_;
   std::vector<std::vector<int> > node_face_association_;
   std::vector<std::vector<bool> > node_vertex_association_;
-  std::vector<std::vector<int> > adj_list_;
+  std::vector<std::vector<uint> > triangle_neighbors_;
   std::vector<int> sampled_indices_;
   std::vector<bool> valid_indices_;
   std::vector<std::vector<std::vector<int> > > lut_;
@@ -37,8 +36,8 @@ protected:
 
 
   void computePcaLrf();
-  void areaBasedNodeSampling(std::vector<std::vector<uint> > & triangle_neighbors, float target_area);
-  void extractNodeBoundaries(uint node_idx, std::vector<bool> & added, std::vector<std::vector<uint> > & triangle_neighbors);
+  void areaBasedNodeSampling(float target_area);
+  void extractNodeBoundaries(const uint node_idx, Eigen::VectorXi & bnd);
 
 public:
   GraphConstructor(std::string filename,

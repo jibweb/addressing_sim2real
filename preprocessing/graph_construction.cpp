@@ -67,8 +67,6 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   for (uint i=0; i < nodes_elts_.size(); i++)
     nodes_elts_[i].reserve(min_node_size);
 
-  boundary_faces_.resize(nodes_nb_);
-
   // TODO Remove nodes with a wrong angle_z_normal
 
   // Initialize the valid indices
@@ -104,22 +102,23 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     }
   }
 
-  std::vector<std::vector<uint> > triangle_neighbors(mesh_->polygons.size());
-  for (uint i=0; i<triangle_neighbors.size(); i++)
-    triangle_neighbors[i].reserve(3);
+  // std::vector<std::vector<uint> > triangle_neighbors_(mesh_->polygons.size());
+  triangle_neighbors_.resize(mesh_->polygons.size());
+  for (uint i=0; i<triangle_neighbors_.size(); i++)
+    triangle_neighbors_[i].reserve(3);
 
   for(auto& it : edge_to_triangle) {
     // TODO slightly shitty way of resolving non manifold meshes
     // if (it.second.size() >= 2) {
     if (it.second[1] != -1) {
-      triangle_neighbors[it.second[0]].push_back(it.second[1]);
-      triangle_neighbors[it.second[1]].push_back(it.second[0]);
+      triangle_neighbors_[it.second[0]].push_back(it.second[1]);
+      triangle_neighbors_[it.second[1]].push_back(it.second[0]);
     }
   }
 
 
   // BFS sampling with area as a stopping criterion
-  areaBasedNodeSampling(triangle_neighbors, neigh_size);
+  areaBasedNodeSampling(neigh_size);
 
   // Fill in the adjacency map
   for (uint i=0; i<node_face_association_.size(); i++) {
@@ -184,7 +183,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::areaBasedNodeSampling(std::vector<std::vector<uint> > & triangle_neighbors, float target_area) {
+void GraphConstructor::areaBasedNodeSampling(float target_area) {
 
   // --- Face area ------------------------------------------------------------
   std::vector<float> face_area;
@@ -249,7 +248,6 @@ void GraphConstructor::areaBasedNodeSampling(std::vector<std::vector<uint> > & t
     float sampled_area = 0.;
 
     std::vector<bool> visited(mesh_->polygons.size(), false);
-    std::vector<bool> added(mesh_->polygons.size(), false);
     visited[sampled_idx] = true;
 
     // --- BFS over the graph to extract the neighborhood ---------------------
@@ -260,7 +258,6 @@ void GraphConstructor::areaBasedNodeSampling(std::vector<std::vector<uint> > & t
 
       // Update the areas
       nodes_elts_[node_idx].push_back(s);
-      added[s] = true;
       node_face_association_[s].push_back(node_idx);
 
       if (samplable_face_area[s] > (target_area - sampled_area)) {
@@ -275,8 +272,8 @@ void GraphConstructor::areaBasedNodeSampling(std::vector<std::vector<uint> > & t
 
 
       // For each edge, find the unvisited neighbor and visit all of them
-      for (uint neigh_idx=0; neigh_idx<triangle_neighbors[s].size(); neigh_idx++) {
-        uint neigh_tri = triangle_neighbors[s][neigh_idx];
+      for (uint neigh_idx=0; neigh_idx<triangle_neighbors_[s].size(); neigh_idx++) {
+        uint neigh_tri = triangle_neighbors_[s][neigh_idx];
 
         if (visited[neigh_tri])
           continue;
@@ -304,9 +301,6 @@ void GraphConstructor::areaBasedNodeSampling(std::vector<std::vector<uint> > & t
       continue;
     }
 
-
-    extractNodeBoundaries(node_idx, added, triangle_neighbors);
-
     if (debug_)
       std::cout << node_idx << " Sampled idx " << sampled_idx << " (Contains " << nodes_elts_[node_idx].size() << " faces)" << std::endl;
   } // for each node
@@ -314,20 +308,24 @@ void GraphConstructor::areaBasedNodeSampling(std::vector<std::vector<uint> > & t
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::extractNodeBoundaries(uint node_idx,
-                                             std::vector<bool> & added,
-                                             std::vector<std::vector<uint> > & triangle_neighbors) {
+void GraphConstructor::extractNodeBoundaries(const uint node_idx, Eigen::VectorXi & bnd) {
   ScopeTime t("Node Boundaries extraction computation", debug_);
-  boundary_faces_[node_idx].reserve(40);
 
+  // --- Prepare the added vector ---------------------------------------------
+  std::vector<bool> added(mesh_->polygons.size(), false);
+  for (uint i=0; i<nodes_elts_[node_idx].size(); i++)
+    added[nodes_elts_[node_idx][i]] = true;
+
+
+  // --- Find the border vertices from the border faces -----------------------
   std::set<uint> border_vertex;
   std::unordered_map<uint, std::vector<uint> > border_vertex_neighbor;
 
   for (uint elt_idx=0; elt_idx < nodes_elts_[node_idx].size(); elt_idx++) {
     uint face_idx = nodes_elts_[node_idx][elt_idx];
 
-    for (uint i=0; i<triangle_neighbors[face_idx].size(); i++) {
-      uint neigh_tri = triangle_neighbors[face_idx][i];
+    for (uint i=0; i<triangle_neighbors_[face_idx].size(); i++) {
+      uint neigh_tri = triangle_neighbors_[face_idx][i];
 
       if (added[neigh_tri])
         continue;
@@ -352,12 +350,12 @@ void GraphConstructor::extractNodeBoundaries(uint node_idx,
     }
   }
 
-  //TODO from pairs to loops, and from loops to most interesting loop
-
   if (border_vertex.size() == 0)
     return;
 
-  std::unordered_map<uint, bool> visited;
+
+  // --- Follow the loop from border vertices ---------------------------------
+  std::unordered_map<Edge, bool, boost::hash<Edge>> visited;
   std::vector<std::vector<uint> > boundary_loops;
   uint loop_idx = 0;
   uint full_size = 0;
@@ -366,26 +364,56 @@ void GraphConstructor::extractNodeBoundaries(uint node_idx,
   do {
     boundary_loops.push_back( std::vector<uint>() );
 
-    // Setup the starting point of the loop
+    // Extract the first node with unvisited edges
     uint start_vertex = *border_vertex.begin();
 
     for (auto border_vert : border_vertex) {
-      if (!visited[border_vert])
-        start_vertex = border_vert;
+      for (uint neigh_idx=0; neigh_idx < border_vertex_neighbor[border_vert].size(); neigh_idx++) {
+        uint neigh = border_vertex_neighbor[border_vert][neigh_idx];
+
+        uint idx1, idx2;
+        if (neigh > border_vert) {
+          idx1 = border_vert;
+          idx2 = neigh;
+        } else {
+          idx1 = neigh;
+          idx2 = border_vert;
+        }
+
+        Edge edge_id(idx2,idx1);
+
+        if (!visited[edge_id]) {
+          start_vertex = border_vert;
+          break;
+        }
+      }
     }
 
+    // From that first node, follow the boundary
     uint cur_vertex = start_vertex;
     uint prev_vertex = start_vertex;
 
     do {
       boundary_loops[loop_idx].push_back(cur_vertex);
-      visited[cur_vertex] = true;
       prev_vertex = cur_vertex;
 
       for (uint neigh_idx=0; neigh_idx < border_vertex_neighbor[cur_vertex].size(); neigh_idx++) {
         uint neigh = border_vertex_neighbor[cur_vertex][neigh_idx];
-        if (!visited[neigh] && neigh != prev_vertex) {
+
+        uint idx1, idx2;
+        if (neigh > cur_vertex) {
+          idx1 = cur_vertex;
+          idx2 = neigh;
+        } else {
+          idx1 = neigh;
+          idx2 = cur_vertex;
+        }
+
+        Edge edge_id(idx2,idx1);
+
+        if (!visited[edge_id] && neigh != prev_vertex) {
           cur_vertex = neigh;
+          visited[edge_id] = true;
           break;
         }
       }
@@ -402,6 +430,51 @@ void GraphConstructor::extractNodeBoundaries(uint node_idx,
   } while (full_size < border_vertex.size());
 
   std::cout << "Boundary loop vertices: " << boundary_loops[max_loop_idx].size() << " / " << full_size << " / " << border_vertex.size() << std::endl;
+
+  bnd.resize(boundary_loops[max_loop_idx].size());
+  for (uint i=0; i<boundary_loops[max_loop_idx].size(); i++)
+    bnd(i) = boundary_loops[max_loop_idx][i];
+
+
+  // boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
+  // viewer->setBackgroundColor (0, 0, 0);
+  // pcl::PointCloud<pcl::PointXYZRGB>::Ptr viz_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+
+  // for (uint elt_idx=0; elt_idx<nodes_elts_[node_idx].size(); elt_idx++) {
+  //   uint tri_idx = nodes_elts_[node_idx][elt_idx];
+  //   for (uint i=0; i<3; i++) {
+  //     PointT p = pc_->points[mesh_->polygons[tri_idx].vertices[i]];
+  //     pcl::PointXYZRGB p2;
+  //     p2.r = 255;
+  //     p2.g = 0;
+  //     p2.b = 0;
+  //     p2.x = p.x;
+  //     p2.y = p.y;
+  //     p2.z = p.z;
+  //     viz_cloud->points.push_back(p2);
+  //   }
+  // }
+
+
+  // for (uint i=0; i<boundary_loops[max_loop_idx].size(); i++) {
+  //   pcl::PointXYZRGB p2;
+  //   p2.r = 0;
+  //   p2.g = 255;
+  //   p2.b = 0;
+  //   p2.x = pc_->points[boundary_loops[max_loop_idx][i]].x;
+  //   p2.y = pc_->points[boundary_loops[max_loop_idx][i]].y;
+  //   p2.z = pc_->points[boundary_loops[max_loop_idx][i]].z;
+  //   viz_cloud->points.push_back(p2);
+  // }
+
+
+  // pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(viz_cloud);
+  // viewer->addPointCloud<pcl::PointXYZRGB> (viz_cloud, rgb, "cloud");
+  // while (!viewer->wasStopped()) {
+  //   viewer->spinOnce(100);
+  // }
+
 }
 
 
@@ -601,25 +674,38 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
 
   for (uint node_idx=0; node_idx < nodes_elts_.size(); node_idx++) {
 
-    // Create the faces matrix
-    std::unordered_map<uint, uint> reverse_vertex_idx;
-    for (uint vert_idx=0; vert_idx < nodes_vertices_[node_idx].size(); vert_idx++) {
-      reverse_vertex_idx[nodes_vertices_[node_idx][vert_idx]] = vert_idx;
-    }
+    // // Create the faces matrix
+    // std::unordered_map<uint, uint> reverse_vertex_idx;
+    // for (uint vert_idx=0; vert_idx < nodes_vertices_[node_idx].size(); vert_idx++) {
+    //   reverse_vertex_idx[nodes_vertices_[node_idx][vert_idx]] = vert_idx;
+    // }
 
-    Eigen::MatrixXi F;
-    F.resize(nodes_elts_[node_idx].size(), 3);
-    for (uint tri_idx=0; tri_idx<nodes_elts_[node_idx].size(); tri_idx++) {
-      uint triangle = nodes_elts_[node_idx][tri_idx];
-      F(tri_idx, 0) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[0]];
-      F(tri_idx, 1) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[1]];
-      F(tri_idx, 2) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[2]];
-    }
+    // Eigen::MatrixXi F;
+    // F.resize(nodes_elts_[node_idx].size(), 3);
+    // for (uint tri_idx=0; tri_idx<nodes_elts_[node_idx].size(); tri_idx++) {
+    //   uint triangle = nodes_elts_[node_idx][tri_idx];
+    //   F(tri_idx, 0) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[0]];
+    //   F(tri_idx, 1) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[1]];
+    //   F(tri_idx, 2) = reverse_vertex_idx[mesh_->polygons[triangle].vertices[2]];
+    // }
 
 
-    // Get the boundary loop
+    // // Get the boundary loop
+    // Eigen::VectorXi bnd;
+    // igl::boundary_loop(F,bnd);
+
+    // std::cout << "LIBIGL (" << bnd.rows() << ")" << std::endl;
+    // for (uint i=0; i<bnd.rows(); i++)
+    //   std::cout << nodes_vertices_[node_idx][bnd(i)] << ", ";
+    // std::cout << std::endl;
+
     Eigen::VectorXi bnd;
-    igl::boundary_loop(F,bnd);
+    extractNodeBoundaries(node_idx, bnd);
+
+    // std::cout << "MINE (" << bnd.rows() << ")" << std::endl;
+    // for (uint i=0; i<bnd.rows(); i++)
+    //   std::cout << bnd(i) << ", ";
+    // std::cout << std::endl;
 
     if (bnd.size() == 0) {
       if (debug_)
@@ -629,18 +715,6 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
       continue;
     }
 
-    std::cout << "LIBIGL Boundary loop: " << bnd.rows();
-    // std::set<uint> test_boundary_loop;
-    // for (uint i=0; i<bnd.rows(); i++) {
-    //   test_boundary_loop.insert(nodes_vertices_[node_idx][bnd(i)]);
-    //   std::cout << nodes_vertices_[node_idx][bnd(i)] << ", ";
-    // }
-    // for (auto vertex_idx : test_boundary_loop) {
-    //   std::cout << vertex_idx << ", ";
-    // }
-    std::cout << std::endl;
-
-
     std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
     uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
 
@@ -649,13 +723,14 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
     int idx_max_val=-1;
     double max_val=-1e3;
     for (uint i=0; i<bnd.size(); i++) {
-      int idx = bnd(i);
-      int vert_idx = nodes_vertices_[node_idx][idx];
+      int vert_idx = bnd(i);
+      // int idx = bnd(i);
+      // int vert_idx = nodes_vertices_[node_idx][idx];
       Eigen::Vector3f vertex = pc_->points[vert_idx].getVector3fMap();
 
       if (vertex.dot(lrf_[node_idx].row(0)) > max_val) {
         max_val = vertex.dot(lrf_[node_idx].row(0));
-        idx_max_val = idx;
+        idx_max_val = i;
       }
     }
 
@@ -664,7 +739,8 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
     for (uint grid_idx=0; grid_idx<8; grid_idx++) {
       for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
         uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
-        uint cur_vertex = nodes_vertices_[node_idx][bnd(loop_idx)];
+        // uint cur_vertex = nodes_vertices_[node_idx][bnd(loop_idx)];
+        uint cur_vertex = bnd(loop_idx);
 
         for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
           if (neigh_node_idx == node_idx)
