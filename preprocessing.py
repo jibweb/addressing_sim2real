@@ -121,18 +121,16 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat, with_fn):
         edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)
     elif p.edge_feat_type == edge_feat.COORDS.name:
         edge_feats = gc.edge_features_coords()
+    elif p.edge_feat_type == edge_feat.TCONV.name:
+        edge_feats = gc.edge_features_tconv()
 
     if p.feat_type == vertex_feat.L_ESF.name:
         node_feats = gc.node_features_l_esf(p.feat_nb)
     elif p.feat_type == vertex_feat.SPH.name:
-        if p.edge_feat_type == edge_feat.TCONV.name:
-            node_feats, edge_feats = gc.node_features_sph_tconv_idx(
-                image_size=p.feat_nb[0], sph_config=p.feat_config)
-        else:
-            node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
-                                              sph_config=p.feat_config)
+        node_feats = gc.node_features_sph(image_size=p.feat_nb[0],
+                                          sph_config=p.feat_config)
     elif p.feat_type == vertex_feat.COORDSSET.name:
-        node_feats, edge_feats = gc.node_features_coords_set_tconv_idx(
+        node_feats = gc.node_features_coords_set(
                 p.feat_nb[0], p.feat_nb[1])
 
     gc.correct_adjacency_for_validity(adj_mat)

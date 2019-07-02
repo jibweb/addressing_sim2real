@@ -627,7 +627,7 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
   if (lrf_.size() == 0)
     computePcaLrf();
 
-  for (uint node_idx=0; node_idx < nodes_elts_.size(); node_idx++) {
+  for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 
     Eigen::VectorXi bnd;
     extractNodeBoundaries(node_idx, bnd);
@@ -1174,17 +1174,13 @@ void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, ui
 
 
 
-void GraphConstructor::coordsSetNodeFeatures(double** result, int* tconv_idx, uint feat_nb, uint num_channels) {
+void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint num_channels) {
   ScopeTime t("Coords Set features computation", debug_);
 
 
   // If necessary, compute the LRF
   if (lrf_.size() == 0)
     computePcaLrf();
-
-
-  // Compute the TConv indices
-  tconvEdgeFeatures(tconv_idx);
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 

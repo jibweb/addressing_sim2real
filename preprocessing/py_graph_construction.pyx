@@ -60,7 +60,7 @@ cdef extern from "graph_construction.h":
 
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
-        void coordsSetNodeFeatures(double** result, int* tconv_idx, unsigned int feat_nb, unsigned int num_channels)
+        void coordsSetNodeFeatures(double** result, unsigned int feat_nb, unsigned int num_channels)
         void sphNodeFeatures(double** result, int* tconv_idx, unsigned int image_size,  unsigned int num_channels, SphParams)
         void pointProjNodeFeatures(double** result, int* tconv_idx, unsigned int image_size)
 
@@ -71,6 +71,7 @@ cdef extern from "graph_construction.h":
         # Edge features
         void coordsEdgeFeatures(double* edge_feats)
         void rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal)
+        void tconvEdgeFeatures(int* tconv_idx)
 
 
 cdef class PyGraph:
@@ -172,42 +173,6 @@ cdef class PyGraph:
                                      image_size, num_channels, config_struct)
         return node_feats2d
 
-    def node_features_sph_tconv_idx(self, image_size, sph_config):
-        """
-        """
-        num_channels = 0
-        for key, val in sph_config.iteritems():
-            if key == "lscm":
-                continue
-            if val:
-                num_channels += 1
-
-        cdef SphParams config_struct
-        config_struct.mask = sph_config["mask"]
-        config_struct.plane_distance = sph_config["plane_distance"]
-        config_struct.euclidean_distance = sph_config["euclidean_distance"]
-        config_struct.z_height = sph_config["z_height"]
-        config_struct.z_rel = sph_config["z_rel"]
-        config_struct.x_coords = sph_config["x_coords"]
-        config_struct.lscm = sph_config["lscm"]
-        config_struct.tconv_idx = True
-
-        cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
-        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
-                                                                        dtype=np.int32)
-        node_feats2d = []
-        cdef np.ndarray[double, ndim=3, mode="c"] tmp
-        arr_shape = [image_size, image_size, num_channels]
-
-        for i in range(self.nodes_nb):
-            tmp = np.zeros(arr_shape, dtype=np.float64)
-            node_feats2d_ptr[i] = &tmp[0, 0, 0]
-            node_feats2d.append(tmp)
-
-        self.c_graph.sphNodeFeatures(node_feats2d_ptr, &tconv_indices[0, 0],
-                                     image_size, num_channels, config_struct)
-        return node_feats2d, tconv_indices
-
     def node_features_pt_proj_tconv_idx(self, image_size):
         """
         """
@@ -229,12 +194,10 @@ cdef class PyGraph:
                                            image_size)
         return node_feats2d, tconv_indices
 
-    def node_features_coords_set_tconv_idx(self, feat_nb, num_channels):
+    def node_features_coords_set(self, feat_nb, num_channels):
         """
         """
         cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
-        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
-                                                                        dtype=np.int32)
         node_feats2d = []
         cdef np.ndarray[double, ndim=2, mode="c"] tmp
         arr_shape = [feat_nb, num_channels]
@@ -245,10 +208,9 @@ cdef class PyGraph:
             node_feats2d.append(tmp)
 
         self.c_graph.coordsSetNodeFeatures(node_feats2d_ptr,
-                                           &tconv_indices[0, 0],
                                            feat_nb,
                                            num_channels)
-        return node_feats2d, tconv_indices
+        return node_feats2d
 
     def adjacency_full_connection(self):
         cdef np.ndarray[double, ndim=2, mode="c"] adj_mat = np.zeros([self.nodes_nb,
@@ -281,6 +243,13 @@ cdef class PyGraph:
                                                                             dtype=np.float64)
         self.c_graph.rotZEdgeFeatures(&edge_feats_mat[0, 0, 0], min_angle_z_normal)
         return edge_feats_mat
+
+    def edge_features_tconv(self):
+        cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
+                                                                        dtype=np.int32)
+        self.c_graph.tconvEdgeFeatures(&tconv_indices[0, 0])
+
+        return tconv_indices
 
     def __dealloc__(self):
         del self.c_graph

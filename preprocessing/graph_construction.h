@@ -70,8 +70,7 @@ public:
 
   // Node features
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);
-  // void esf3dNodeFeatures(double** result);
-  void coordsSetNodeFeatures(double** result, int* tconv_idx, unsigned int feat_nb, unsigned int num_channels);
+  void coordsSetNodeFeatures(double** result, unsigned int feat_nb, unsigned int num_channels);
   void sphNodeFeatures(double** result, int* tconv_idx, uint image_size, uint num_channels, SphParams sph_params);
   void pointProjNodeFeatures(double** result, int* tconv_idx, uint image_size);
 
