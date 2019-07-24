@@ -7,19 +7,21 @@
 #include <pcl/common/transforms.h>
 #include <pcl/filters/filter.h>
 #include <pcl/search/kdtree.h>
+#include <pcl/visualization/pcl_visualizer.h>
 
 #define PI 3.14159265
 #include "parameters.h"
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-double scale_points_unit_sphere (pcl::PointCloud<pcl::PointXYZINormal> &pc,
+template <class T>
+double scale_points_unit_sphere (pcl::PointCloud<T> &pc,
                                float scalefactor) {
   Eigen::Vector4f centroid;
   pcl::compute3DCentroid (pc, centroid);
   pcl::demeanPointCloud (pc, centroid, pc);
 
   float max_distance = 0., d;
-  pcl::PointXYZINormal cog;
+  T cog;
   cog.x = 0;
   cog.y = 0;
   cog.z = 0;
