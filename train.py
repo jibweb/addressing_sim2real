@@ -95,12 +95,15 @@ if __name__ == "__main__":
         feat_compute = get_graph_preprocessing_fn(p)
 
         # --- Dataset setup ---------------------------------------------------
-        pregex = "/*_full_wnormals_wattention.ply" if p.dataset == DATASETS.ModelNet10  \
-            else "/*_bin.ply"
-        if p.dataset == DATASETS.ScanNet.name:
-            pregex = "/*.ply"
+        pregex = "/*_visible_normals_bin.ply"
+        if p.dataset == DATASETS.ModelNet10.name:
+            pregex = "/*_full_wnormals_wattention.ply"
+        elif p.dataset == DATASETS.ModelNet10PLY.name:
+            pregex = "/*_bin_visible_normals_bin.ply"  # else "/*_bin.ply"
+        elif p.dataset == DATASETS.ScanNet.name:
+            pregex = "*.ply"
         pbalance_train_set = True  # False if p.dataset == DATASETS.ScanNet.name \
-                        #    else True
+        #    else True
         dataset = Dataset(batch_size=p.batch_size,
                           balance_train_set=pbalance_train_set,
                           val_set_pct=p.val_set_pct,

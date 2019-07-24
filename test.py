@@ -59,10 +59,13 @@ if __name__ == "__main__":
 
     # --- Dataset setup -------------------------------------------------------
     Dataset, CLASS_DICT = get_dataset(p.dataset)
-    pregex = "/*_full_wnormals_wattention.ply" if p.dataset == DATASETS.ModelNet10.name  \
-        else "/*_bin.ply"
-    if p.dataset == DATASETS.ScanNet.name:
-        pregex = "/*.ply"
+    pregex = "/*_visible_normals_bin.ply"
+    if p.dataset == DATASETS.ModelNet10.name:
+        pregex = "/*_full_wnormals_wattention.ply"
+    elif p.dataset == DATASETS.ModelNet10PLY.name:
+        pregex = "/*_bin_visible_normals_bin.ply"  # else "/*_bin.ply"
+    elif p.dataset == DATASETS.ScanNet.name:
+        pregex = "*.ply"
     dataset = Dataset(batch_size=p.batch_size,
                       val_set_pct=p.val_set_pct,
                       regex=pregex)
