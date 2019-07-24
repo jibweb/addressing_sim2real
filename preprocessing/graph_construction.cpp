@@ -1,6 +1,7 @@
 #include <random>
 #include <math.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 // #include <time>
 
@@ -11,7 +12,6 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/point_types.h>
-#include <pcl/visualization/pcl_visualizer.h>
 
 
 // #define WITH_LIBIGL 0
@@ -21,8 +21,10 @@
   #include <igl/writePLY.h>
 #endif
 
+#include "tinyply.h"
 #include "graph_construction.h"
 #include "mesh_utils.cpp"
+#include "graph_visualization.h"
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -37,16 +39,12 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   if (!debug_)
     pcl::console::setVerbosityLevel(pcl::console::L_ALWAYS);
 
-  ScopeTime t("Initialization (MeshGraphConstructor)", debug_);
+  ScopeTime t("Graph Initialization", debug_);
 
-  // Read the point cloud
-  if (pcl::io::loadPLYFile(filename_.c_str(), *mesh_) == -1) {
-    PCL_ERROR("Couldn't read %s file \n", filename_.c_str());
-    return;
+  {
+    ScopeTime t1("Tinyply file opening", debug_);
+    loadPLY(filename_, *pc_, *mesh_);
   }
-
-  pcl::fromPCLPointCloud2(mesh_->cloud, *pc_);
-  tree_->setInputCloud (pc_);
 
   if (debug_) {
     std::cout << "PolygonMesh: " << mesh_->polygons.size() << " triangles" << std::endl;
@@ -54,7 +52,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   }
 
   // Data augmentation
-  scale_points_unit_sphere (*pc_, 1.);
+  scale_points_unit_sphere<PointT> (*pc_, 1.);
   // scale_points_unit_sphere (*pc_, gridsize_/2, centroid);
   // params_.neigh_size = params_.neigh_size * gridsize_/2;
   // augment_data(pc_, params_);
@@ -75,102 +73,110 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   // --- Edge connectivity ----------------------------------------------------
   std::unordered_map<Edge, std::array<int, 2>, boost::hash<Edge> > edge_to_triangle;
   edge_to_triangle.reserve(3*mesh_->polygons.size());
-
-  for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
-    for(uint edge_idx=0; edge_idx<3; edge_idx++) {
-      uint idx1 = mesh_->polygons[tri_idx].vertices[edge_idx];
-      uint idx2 = mesh_->polygons[tri_idx].vertices[(edge_idx+1)%3];
-
-      if (idx1 > idx2) {
-        uint tmp = idx1;
-        idx1 = idx2;
-        idx2 = tmp;
-      }
-
-      Edge edge_id(idx2,idx1);
-
-      auto arr = edge_to_triangle.find(edge_id);
-
-      if (arr != edge_to_triangle.end()) {
-        // Edge exists already
-        arr->second[1] = tri_idx;
-      } else {
-        // Edge doesn't exist yet
-        edge_to_triangle[edge_id][0] = tri_idx;
-        edge_to_triangle[edge_id][1] = -1;
-      }
-    }
-  }
-
-  // std::vector<std::vector<uint> > triangle_neighbors_(mesh_->polygons.size());
   triangle_neighbors_.resize(mesh_->polygons.size());
-  for (uint i=0; i<triangle_neighbors_.size(); i++)
-    triangle_neighbors_[i].reserve(3);
 
-  for(auto& it : edge_to_triangle) {
-    // TODO slightly shitty way of resolving non manifold meshes
-    // if (it.second.size() >= 2) {
-    if (it.second[1] != -1) {
-      triangle_neighbors_[it.second[0]].push_back(it.second[1]);
-      triangle_neighbors_[it.second[1]].push_back(it.second[0]);
+  {
+    ScopeTime t2("Connectivity computation", debug_);
+    for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+      for(uint edge_idx=0; edge_idx<3; edge_idx++) {
+        uint idx1 = mesh_->polygons[tri_idx].vertices[edge_idx];
+        uint idx2 = mesh_->polygons[tri_idx].vertices[(edge_idx+1)%3];
+
+        if (idx1 > idx2) {
+          uint tmp = idx1;
+          idx1 = idx2;
+          idx2 = tmp;
+        }
+
+        Edge edge_id(idx2,idx1);
+
+        auto arr = edge_to_triangle.find(edge_id);
+
+        if (arr != edge_to_triangle.end()) {
+          // Edge exists already
+          arr->second[1] = tri_idx;
+        } else {
+          // Edge doesn't exist yet
+          edge_to_triangle[edge_id][0] = tri_idx;
+          edge_to_triangle[edge_id][1] = -1;
+        }
+      }
+    }
+
+    // std::vector<std::vector<uint> > triangle_neighbors_(mesh_->polygons.size());
+    for (uint i=0; i<triangle_neighbors_.size(); i++)
+      triangle_neighbors_[i].reserve(3);
+
+    for(auto& it : edge_to_triangle) {
+      // TODO slightly shitty way of resolving non manifold meshes
+      // if (it.second.size() >= 2) {
+      if (it.second[1] != -1) {
+        triangle_neighbors_[it.second[0]].push_back(it.second[1]);
+        triangle_neighbors_[it.second[1]].push_back(it.second[0]);
+      }
     }
   }
-
 
   // BFS sampling with area as a stopping criterion
   areaBasedNodeSampling(neigh_size);
 
-  // Fill in the adjacency map
-  for (uint i=0; i<node_face_association_.size(); i++) {
-    for (uint ni=0; ni<node_face_association_[i].size(); ni++) {
-      int node_idx1 = node_face_association_[i][ni];
-      for (uint nj=ni+1; nj<node_face_association_[i].size(); nj++) {
-        int node_idx2 = node_face_association_[i][nj];
-        adj_mat[node_idx1*nodes_nb_ + node_idx2] = true;
-        adj_mat[node_idx2*nodes_nb_ + node_idx1] = true;
+  {
+    ScopeTime t3("Node association", debug_);
+    // Fill in the adjacency map
+    for (uint i=0; i<node_face_association_.size(); i++) {
+      for (uint ni=0; ni<node_face_association_[i].size(); ni++) {
+        int node_idx1 = node_face_association_[i][ni];
+        for (uint nj=ni+1; nj<node_face_association_[i].size(); nj++) {
+          int node_idx2 = node_face_association_[i][nj];
+          adj_mat[node_idx1*nodes_nb_ + node_idx2] = true;
+          adj_mat[node_idx2*nodes_nb_ + node_idx1] = true;
+        }
       }
     }
   }
 
 
   // --- Get the vertices associated with each node ---------------------------
-  nodes_vertices_.resize(nodes_nb_);
-  for (uint node_idx=0; node_idx<nodes_elts_.size(); node_idx++) {
-    std::set<uint> vertex_subset;
-    for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
-      uint face_idx = nodes_elts_[node_idx][tri_idx];
+  {
+    ScopeTime t3("Node vertices", debug_);
+    nodes_vertices_.resize(nodes_nb_);
+    for (uint node_idx=0; node_idx<nodes_elts_.size(); node_idx++) {
+      std::unordered_set<uint> vertex_subset;
+      for (uint tri_idx=0; tri_idx < nodes_elts_[node_idx].size(); tri_idx++) {
+        uint face_idx = nodes_elts_[node_idx][tri_idx];
 
-      vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
-      vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
-      vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
+        vertex_subset.insert(mesh_->polygons[face_idx].vertices[0]);
+        vertex_subset.insert(mesh_->polygons[face_idx].vertices[1]);
+        vertex_subset.insert(mesh_->polygons[face_idx].vertices[2]);
+      }
+
+      nodes_vertices_[node_idx].resize(vertex_subset.size());
+
+      uint new_idx = 0;
+      for (auto vertex_idx : vertex_subset) {
+        nodes_vertices_[node_idx][new_idx] = vertex_idx;
+        new_idx++;
+      }
     }
-
-    nodes_vertices_[node_idx].resize(vertex_subset.size());
-
-    uint new_idx = 0;
-    for (auto vertex_idx : vertex_subset) {
-      nodes_vertices_[node_idx][new_idx] = vertex_idx;
-      new_idx++;
-    }
-
   }
 
 
   // TODO =====================================================================
-  // Fill in the vertex to node association
-  node_vertex_association_.resize(pc_->points.size());
-  for (uint i=0; i<node_vertex_association_.size(); i++)
-    node_vertex_association_[i].resize(nodes_nb_, false);
+  // // Fill in the vertex to node association
+  // node_vertex_association_.resize(pc_->points.size(), std::vector<bool>(nodes_nb_, false));
+  // // node_vertex_association_.resize(pc_->points.size());
+  // // for (uint i=0; i<node_vertex_association_.size(); i++)
+  // //   node_vertex_association_[i].resize(nodes_nb_, false);
 
-  for (uint i=0; i<node_face_association_.size(); i++) {
-    for (uint j=0; j<3; j++) {
-      uint vertex_idx = mesh_->polygons[i].vertices[j];
-      for (uint k=0; k<node_face_association_[i].size(); k++) {
-        uint node_idx = node_face_association_[i][k];
-        node_vertex_association_[vertex_idx][node_idx] = true;
-      }
-    }
-  }
+  // for (uint i=0; i<node_face_association_.size(); i++) {
+  //   for (uint j=0; j<3; j++) {
+  //     uint vertex_idx = mesh_->polygons[i].vertices[j];
+  //     for (uint k=0; k<node_face_association_[i].size(); k++) {
+  //       uint node_idx = node_face_association_[i][k];
+  //       node_vertex_association_[vertex_idx][node_idx] = true;
+  //     }
+  //   }
+  // }
 
   // \TODO =====================================================================
 
@@ -184,6 +190,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::areaBasedNodeSampling(float target_area) {
+  ScopeTime t("Area-based node sampling", debug_);
 
   // --- Face area ------------------------------------------------------------
   std::vector<float> face_area;
@@ -258,7 +265,6 @@ void GraphConstructor::areaBasedNodeSampling(float target_area) {
 
       // Update the areas
       nodes_elts_[node_idx].push_back(s);
-      node_face_association_[s].push_back(node_idx);
 
       if (samplable_face_area[s] > (target_area - sampled_area)) {
         total_area = std::max(0.f, total_area  - target_area + sampled_area);
@@ -299,11 +305,20 @@ void GraphConstructor::areaBasedNodeSampling(float target_area) {
 
       node_idx--;
       continue;
+    } else {
+      for (auto elt : nodes_elts_[node_idx])
+        node_face_association_[elt].push_back(node_idx);
     }
 
     if (debug_)
       std::cout << node_idx << " Sampled idx " << sampled_idx << " (Contains " << nodes_elts_[node_idx].size() << " faces)" << std::endl;
   } // for each node
+}
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void GraphConstructor::curvBasedNodeSampling(float target_curv) {
 }
 
 
@@ -538,85 +553,89 @@ void GraphConstructor::correctAdjacencyForValidity(double* adj_mat) {
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::coordsEdgeFeatures(double* edge_feats) {
-  int index1, index2;
 
-  for (uint pt1_idx=0; pt1_idx < sampled_indices_.size(); pt1_idx++) {
-    index1 = sampled_indices_[pt1_idx];
-    Eigen::Vector3f v1 = pc_->points[index1].getVector3fMap();
+  // TODO: NEEDS TO BE REWRITTEN FOR sampled_indices BEING FACES AND NOT VERTICES
+  // int index1, index2;
 
-    if (std::isnan(v1(0)) || std::isnan(v1(1)) || std::isnan(v1(2)))
-      continue;
+  // for (uint pt1_idx=0; pt1_idx < sampled_indices_.size(); pt1_idx++) {
+  //   index1 = sampled_indices_[pt1_idx];
+  //   Eigen::Vector3f v1 = pc_->points[index1].getVector3fMap();
 
-    for (uint pt2_idx=0; pt2_idx < sampled_indices_.size(); pt2_idx++) {
-      index2 = sampled_indices_[pt2_idx];
-      Eigen::Vector3f v2 = pc_->points[index2].getVector3fMap();
-      Eigen::Vector3f v21 = v2 - v1;
-      // v21.normalize();
+  //   if (std::isnan(v1(0)) || std::isnan(v1(1)) || std::isnan(v1(2)))
+  //     continue;
 
-      if (std::isnan(v21(0)) || std::isnan(v21(1)) || std::isnan(v21(2)))
-        continue;
+  //   for (uint pt2_idx=0; pt2_idx < sampled_indices_.size(); pt2_idx++) {
+  //     index2 = sampled_indices_[pt2_idx];
+  //     Eigen::Vector3f v2 = pc_->points[index2].getVector3fMap();
+  //     Eigen::Vector3f v21 = v2 - v1;
+  //     // v21.normalize();
 
-      edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 0] = v21(0);
-      edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 1] = v21(1);
-      edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 2] = v21(2);
-    }
-  }
+  //     if (std::isnan(v21(0)) || std::isnan(v21(1)) || std::isnan(v21(2)))
+  //       continue;
+
+  //     edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 0] = v21(0);
+  //     edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 1] = v21(1);
+  //     edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 2] = v21(2);
+  //   }
+  // }
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal) {
-  int index1, index2;
-  Eigen::Vector3f z(0., 0., 1.);
-  z.normalize();
 
-  for (uint pt1_idx=0; pt1_idx < sampled_indices_.size(); pt1_idx++) {
-    index1 = sampled_indices_[pt1_idx];
-    Eigen::Vector3f v1 = pc_->points[index1].getVector3fMap();
-    Eigen::Vector3f n1 = pc_->points[index1].getNormalVector3fMap();
-    n1.normalize();
+  // TODO: NEEDS TO BE REWRITTEN FOR sampled_indices BEING FACES AND NOT VERTICES
+  // int index1, index2;
+  // Eigen::Vector3f z(0., 0., 1.);
+  // z.normalize();
 
-    if (acos(fabs(n1.dot(z))) < min_angle_z_normal*M_PI/180.) {
-      valid_indices_[pt1_idx] = false;
-      continue;
-    }
+  // for (uint pt1_idx=0; pt1_idx < sampled_indices_.size(); pt1_idx++) {
+  //   index1 = sampled_indices_[pt1_idx];
+  //   Eigen::Vector3f v1 = pc_->points[index1].getVector3fMap();
+  //   Eigen::Vector3f n1 = pc_->points[index1].getNormalVector3fMap();
+  //   n1.normalize();
+
+  //   if (acos(fabs(n1.dot(z))) < min_angle_z_normal*M_PI/180.) {
+  //     valid_indices_[pt1_idx] = false;
+  //     continue;
+  //   }
 
 
-    Eigen::Vector3f n_axis;
-    n_axis(0) = n1(0);
-    n_axis(1) = n1(1);
-    n_axis(2) = 0.;
-    n_axis.normalize();
-    Eigen::Vector3f w = n_axis.cross(z);
+  //   Eigen::Vector3f n_axis;
+  //   n_axis(0) = n1(0);
+  //   n_axis(1) = n1(1);
+  //   n_axis(2) = 0.;
+  //   n_axis.normalize();
+  //   Eigen::Vector3f w = n_axis.cross(z);
 
-    Eigen::Matrix3f lrf;
+  //   Eigen::Matrix3f lrf;
 
-    lrf.row(0) << n1;
-    lrf.row(1) << w;
-    lrf.row(2) << z;
+  //   lrf.row(0) << n1;
+  //   lrf.row(1) << w;
+  //   lrf.row(2) << z;
 
-    for (uint pt2_idx=0; pt2_idx < sampled_indices_.size(); pt2_idx++) {
-      index2 = sampled_indices_[pt2_idx];
-      Eigen::Vector3f v2 = pc_->points[index2].getVector3fMap();
-      Eigen::Vector3f v21 = v2 - v1;
-      Eigen::Vector3f local_coords = lrf * v21;
-      // v21.normalize();
+  //   for (uint pt2_idx=0; pt2_idx < sampled_indices_.size(); pt2_idx++) {
+  //     index2 = sampled_indices_[pt2_idx];
+  //     Eigen::Vector3f v2 = pc_->points[index2].getVector3fMap();
+  //     Eigen::Vector3f v21 = v2 - v1;
+  //     Eigen::Vector3f local_coords = lrf * v21;
+  //     // v21.normalize();
 
-      if (std::isnan(local_coords(0)) || std::isnan(local_coords(1)) || std::isnan(local_coords(2))) {
-        std::cout << local_coords << "\n----\n"
-                  << lrf << "\n---\n"
-                  << n1 << "\n---\n"
-                  << n_axis << "\n---\n"
-                  << w << "\n---\n"
-                  << z << "\n***\n"
-                  << std::endl;
-      }
+  //     if (std::isnan(local_coords(0)) || std::isnan(local_coords(1)) || std::isnan(local_coords(2))) {
+  //       std::cout << local_coords << "\n----\n"
+  //                 << lrf << "\n---\n"
+  //                 << n1 << "\n---\n"
+  //                 << n_axis << "\n---\n"
+  //                 << w << "\n---\n"
+  //                 << z << "\n***\n"
+  //                 << std::endl;
+  //     }
 
-      edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 0] = local_coords(0);
-      edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 1] = local_coords(1);
-      edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 2] = local_coords(2);
-    }
-  }
+  //     edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 0] = local_coords(0);
+  //     edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 1] = local_coords(1);
+  //     edge_feats[3*(nodes_nb_*pt1_idx + pt2_idx) + 2] = local_coords(2);
+  //   }
+  // }
 }
 
 
@@ -1186,7 +1205,7 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
 
     uint face_nb = nodes_elts_[node_idx].size();
     for (uint feat_idx=0; feat_idx<feat_nb; feat_idx++) {
-      float rand_idx = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/face_nb));
+      uint rand_idx = rand() % face_nb;
 
       float u = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX));
       float v = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX));
@@ -1220,131 +1239,24 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::vizMesh(double* adj_mat, bool viz_small_spheres) {
+void GraphConstructor::vizGraph(double* adj_mat, VizParams viz_params) {
   // --- Viz ------------------------------------------------------------------
 
   boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer (new pcl::visualization::PCLVisualizer ("3D Viewer"));
+
   {
-    ScopeTime t("Mesh viz computation", debug_);
+    ScopeTime t("Visualization setup", debug_);
     viewer->setBackgroundColor (0, 0, 0);
     viewer->addCoordinateSystem (1., "coords", 0);
 
-    for (uint i=0; i<sampled_indices_.size(); i++) {
-      uint tri_idx = sampled_indices_[i];
-      Eigen::Vector4f p1 = pc_->points[mesh_->polygons[tri_idx].vertices[0]].getVector4fMap ();
-      Eigen::Vector4f p2 = pc_->points[mesh_->polygons[tri_idx].vertices[1]].getVector4fMap ();
-      Eigen::Vector4f p3 = pc_->points[mesh_->polygons[tri_idx].vertices[2]].getVector4fMap ();
+    if (viz_params.graph_skeleton)
+      vizGraphSkeleton<PointT>(viewer, *pc_, *mesh_, adj_mat, sampled_indices_, nodes_nb_);
 
-      p1 += p2;
-      p1 += p3;
-      p1 /= 3;
+    if (viz_params.mesh)
+      vizMesh<PointT>(viewer, *pc_, *mesh_);
 
-      PointT p;
-      p.x = p1(0);
-      p.y = p1(1);
-      p.z = p1(2);
-
-      if (i == 0)
-        viewer->addSphere<PointT>(p, 0.015, 1., 1., 0., "sphere_zero");
-      else
-        viewer->addSphere<PointT>(p, 0.01, 1., 0., 0., "sphere_" +std::to_string(tri_idx));
-
-      for (uint i2=0; i2<nodes_nb_; i2++) {
-        if (adj_mat[nodes_nb_*i + i2] > 0.) {
-          int idx2 = sampled_indices_[i2];
-          if (tri_idx != idx2) {
-            Eigen::Vector4f p2_1 = pc_->points[mesh_->polygons[idx2].vertices[0]].getVector4fMap ();
-            Eigen::Vector4f p2_2 = pc_->points[mesh_->polygons[idx2].vertices[1]].getVector4fMap ();
-            Eigen::Vector4f p2_3 = pc_->points[mesh_->polygons[idx2].vertices[2]].getVector4fMap ();
-
-            p2_1 += p2_2;
-            p2_1 += p2_3;
-            p2_1 /= 3;
-
-            PointT p2;
-            p2.x = p2_1(0);
-            p2.y = p2_1(1);
-            p2.z = p2_1(2);
-            viewer->addLine<PointT>(p, p2, 0., 0., 1., "line_" +std::to_string(tri_idx)+std::to_string(idx2));
-          }
-        }
-      }
-    }
-
-
-    std::vector<uint> r, g, b, x_noise, y_noise, z_noise;
-    r.resize(sampled_indices_.size());
-    g.resize(sampled_indices_.size());
-    b.resize(sampled_indices_.size());
-    x_noise.resize(sampled_indices_.size());
-    y_noise.resize(sampled_indices_.size());
-    z_noise.resize(sampled_indices_.size());
-
-    float max_noise = 0.05;
-    for (uint i =0; i < sampled_indices_.size(); i++){
-      r[i] = rand() % 255;
-      b[i] = rand() % 255;
-      g[i] = rand() % 255;
-      x_noise[i] = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/max_noise));
-      y_noise[i] = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/max_noise));
-      z_noise[i] = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX/max_noise));
-
-    }
-
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr viz_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-    // for (uint pt_idx=0; pt_idx<pc_->points.size(); pt_idx++) {
-    //   pcl::PointXYZRGB p;
-    //   p.x = pc_->points[pt_idx].x;
-    //   p.y = pc_->points[pt_idx].y;
-    //   p.z = pc_->points[pt_idx].z;
-
-    //   p.r = 230;
-    //   p.g = 230;
-    //   p.b = 230;
-
-    //   viz_cloud->points.push_back(p);
-    // }
-
-    // for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
-    for (uint node_idx=0; node_idx < 1; node_idx++) {
-      Eigen::Vector4f p1 = pc_->points[mesh_->polygons[sampled_indices_[node_idx]].vertices[0]].getVector4fMap ();
-      Eigen::Vector4f p2 = pc_->points[mesh_->polygons[sampled_indices_[node_idx]].vertices[1]].getVector4fMap ();
-      Eigen::Vector4f p3 = pc_->points[mesh_->polygons[sampled_indices_[node_idx]].vertices[2]].getVector4fMap ();
-
-      p1 += p2;
-      p1 += p3;
-      p1 /= 3;
-      p1.normalize();
-
-      for (uint elt_idx=0; elt_idx<nodes_elts_[node_idx].size(); elt_idx++) {
-        uint tri_idx = nodes_elts_[node_idx][elt_idx];
-        for (uint i=0; i<3; i++) {
-          PointT p = pc_->points[mesh_->polygons[tri_idx].vertices[i]];
-          pcl::PointXYZRGB p2;
-          p2.r = r[node_idx];
-          p2.g = g[node_idx];
-          p2.b = b[node_idx];
-          p2.x = p.x; // + p1(0);
-          p2.y = p.y; // + p1(1);
-          p2.z = p.z; // + p1(2);
-          viz_cloud->points.push_back(p2);
-        }
-      }
-    }
-
-    pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(viz_cloud);
-    viewer->addPointCloud<pcl::PointXYZRGB> (viz_cloud, rgb, "cloud");
-
-
-    // Viz resized mesh
-    // pcl::PolygonMesh::Ptr mesh_2(new pcl::PolygonMesh);
-    // pcl::PCLPointCloud2 point_cloud2;
-    // pcl::toPCLPointCloud2(*pc_, point_cloud2);
-
-    // mesh_2->cloud = point_cloud2;
-    // mesh_2->polygons = mesh_->polygons;
-    // viewer->addPolygonMesh (*mesh_2);
-
+    if (viz_params.nodes)
+      vizNodes<PointT>(viewer, *pc_, *mesh_, nodes_vertices_, sampled_indices_);
   }
 
   while (!viewer->wasStopped()) {

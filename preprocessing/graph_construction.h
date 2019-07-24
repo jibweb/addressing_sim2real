@@ -37,6 +37,7 @@ protected:
 
   void computePcaLrf();
   void areaBasedNodeSampling(float target_area);
+  void curvBasedNodeSampling(float target_curv);
   void extractNodeBoundaries(const uint node_idx, Eigen::VectorXi & bnd);
 
 public:
@@ -66,7 +67,7 @@ public:
   void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
-  void vizMesh(double* adj_mat, bool viz_small_spheres);
+  void vizGraph(double* adj_mat, VizParams viz_params);
 
   // Node features
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);

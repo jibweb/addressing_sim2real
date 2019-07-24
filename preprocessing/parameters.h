@@ -44,3 +44,10 @@ struct SphParams {
   bool tconv_idx=false;
   bool lscm=false;
 };
+
+
+struct VizParams {
+  bool graph_skeleton=false;
+  bool mesh=false;
+  bool nodes=false;
+};

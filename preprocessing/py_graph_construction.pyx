@@ -7,6 +7,9 @@ import numpy as np
 cimport numpy as np
 
 
+cdef extern from "tinyply.cpp":
+    pass
+
 cdef extern from "graph_construction.cpp":
     pass
 
@@ -22,6 +25,10 @@ cdef extern from "graph_construction.h":
         bint y_coords
         bint tconv_idx
         bint lscm
+    ctypedef struct VizParams:
+        bool graph_skeleton
+        bool mesh
+        bool nodes
     ctypedef struct Parameters:
         # Graph structure
         # unsigned int nodes_nb
@@ -56,7 +63,7 @@ cdef extern from "graph_construction.h":
         void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size)
         void correctAdjacencyForValidity(double* adj_mat)
         void getValidIndices(int* valid_indices)
-        void vizMesh(double* adj_mat, bool)
+        void vizGraph(double* adj_mat, VizParams)
 
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
@@ -118,8 +125,13 @@ cdef class PyGraph:
         self.c_graph.getValidIndices(&valid_indices[0])
         return valid_indices
 
-    def viz_mesh(self, np.ndarray[np.float64_t, ndim=2] adj_mat, bool viz_small_spheres=True):
-        self.c_graph.vizMesh(&adj_mat[0, 0], viz_small_spheres)
+    def viz_graph(self, np.ndarray[np.float64_t, ndim=2] adj_mat, viz_config):
+        cdef VizParams viz_params
+        viz_params.graph_skeleton = viz_config.get("graph_skeleton", False)
+        viz_params.mesh = viz_config.get("mesh")
+        viz_params.nodes = viz_config.get("nodes")
+
+        self.c_graph.vizGraph(&adj_mat[0, 0], viz_params)
 
     def node_features_l_esf(self, feat_nb):
         """
