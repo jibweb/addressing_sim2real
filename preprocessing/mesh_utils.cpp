@@ -21,6 +21,20 @@ float triangle_area(Eigen::Vector4f& p1, Eigen::Vector4f& p2, Eigen::Vector4f& p
 }
 
 
+Eigen::Vector3f triangle_normal(Eigen::Vector3f& p1, Eigen::Vector3f& p2, Eigen::Vector3f& p3) {
+
+  // Get the area of the triangle
+  Eigen::Vector3f v21 (p2 - p1);
+  Eigen::Vector3f v31 (p3 - p1);
+
+  Eigen::Vector3f normal = v21.cross(v31);
+  normal.normalize();
+
+  return normal;
+}
+
+
+
 void bresenham_line_low(int x0, int y0, int x1, int y1, std::vector<int> & min_y, std::vector<int> & max_y, int min_x) {
   int dx = x1 - x0;
   int dy = y1 - y0;
@@ -109,7 +123,7 @@ void rasterize(const Eigen::MatrixXi & F,
                const double min_px,
                const double max_px) {
 
-  Eigen::MatrixXd Z_buffer = Eigen::MatrixXd::Constant(image_size+1, image_size+1, -1.e3);
+  Eigen::MatrixXd Z_buffer = Eigen::MatrixXd::Constant(image_size+1, image_size+1, 1.e4);
 
 
   // --- Rasterization ----------------------------------------------------
@@ -182,7 +196,7 @@ void rasterize(const Eigen::MatrixXi & F,
         double z_interp = w0 * V_z(F(face_idx, 0))
                         + w1 * V_z(F(face_idx, 1))
                         + w2 * V_z(F(face_idx, 2));
-        if (z_interp > Z_buffer((min_x + i), j)) {
+        if (z_interp < Z_buffer((min_x + i), j)) {
           image_mask((min_x + i), j) = 1.;
 
           W0((min_x + i), j) = (w0);
