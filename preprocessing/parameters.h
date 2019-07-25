@@ -47,7 +47,10 @@ struct SphParams {
 
 
 struct VizParams {
+  bool curvature=false;
   bool graph_skeleton=false;
+  bool lrf=false;
   bool mesh=false;
   bool nodes=false;
+  bool normals=false;
 };
