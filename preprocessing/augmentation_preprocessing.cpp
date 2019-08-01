@@ -45,7 +45,7 @@ double scale_points_unit_sphere (pcl::PointCloud<T> &pc,
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void augment_data(pcl::PointCloud<pcl::PointXYZINormal>::Ptr pc,
-                  Parameters & params,
+                  TransfoParams & params,
                   unsigned int gridsize,
                   bool debug) {
 

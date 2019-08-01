@@ -31,6 +31,7 @@ void getJetColour(float v,
    }
 }
 
+
 template <class T>
 void vizGraphSkeleton(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
                       pcl::PointCloud<T> & pc,
@@ -92,7 +93,8 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
              pcl::PointCloud<T> & pc,
              pcl::PolygonMesh & mesh,
              std::vector<std::vector<int> > & nodes_vertices,
-             std::vector<int> & sampled_indices) {
+             std::vector<int> & sampled_indices,
+             std::vector<std::vector<uint> > & boundary_loops) {
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr viz_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
 
   uint to_reserve = 0;
@@ -102,9 +104,13 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
   viz_cloud->points.reserve(to_reserve);
 
   for (uint node_idx=0; node_idx<sampled_indices.size(); node_idx++) {
-    uint r = rand() % 255;
-    uint g = rand() % 255;
-    uint b = rand() % 255;
+    uint r = rand() % 210;
+    uint g = rand() % 210;
+    uint b = rand() % 210;
+
+    std::vector<bool> is_boundary(pc.points.size(), false);
+    for (uint i=0; i<boundary_loops[node_idx].size(); i++)
+      is_boundary[boundary_loops[node_idx][i]] = true;
 
     uint tri_idx = sampled_indices[node_idx];
     Eigen::Vector3f v = pc.points[mesh.polygons[tri_idx].vertices[0]].getVector3fMap ();
@@ -119,12 +125,20 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
 
     for (uint pt_idx=0; pt_idx < nodes_vertices[node_idx].size(); pt_idx++) {
       pcl::PointXYZRGB p;
-      p.x = pc.points[nodes_vertices[node_idx][pt_idx]].x + 0.4*node_center_pt.x;
-      p.y = pc.points[nodes_vertices[node_idx][pt_idx]].y + 0.4*node_center_pt.y;
-      p.z = pc.points[nodes_vertices[node_idx][pt_idx]].z + 0.4*node_center_pt.z;
-      p.r = r;
-      p.g = g;
-      p.b = b;
+      float exploded_view_scale = 0.01;
+      p.x = pc.points[nodes_vertices[node_idx][pt_idx]].x + exploded_view_scale*node_center_pt.x;
+      p.y = pc.points[nodes_vertices[node_idx][pt_idx]].y + exploded_view_scale*node_center_pt.y;
+      p.z = pc.points[nodes_vertices[node_idx][pt_idx]].z + exploded_view_scale*node_center_pt.z;
+
+      if (is_boundary[nodes_vertices[node_idx][pt_idx]]) {
+        p.r = r + 45;
+        p.g = g + 45;
+        p.b = b + 45;
+      } else {
+        p.r = r;
+        p.g = g;
+        p.b = b;
+      }
 
       viz_cloud->points.push_back(p);
     }
@@ -136,35 +150,26 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
 
 
 template<class T>
-void vizVertexCurvature(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
-                        pcl::PointCloud<T> & pc) {
-  float max_curv = 5.;
-
-  // for (uint pt_idx=0; pt_idx<pc.points.size(); pt_idx++) {
-  //   if (pc.points[pt_idx].curvature > max_curv)
-  //     max_curv = pc.points[pt_idx].curvature;
-  // }
-
-  for (uint pt_idx=0; pt_idx<pc.points.size(); pt_idx++) {
-    if (pc.points[pt_idx].curvature > max_curv)
-      max_curv = pc.points[pt_idx].curvature;
-  }
+void vizFaceAngle(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
+                  pcl::PointCloud<T> & pc,
+                  pcl::PolygonMesh & mesh,
+                  std::vector<float> & face_angle) {
+  float max_angle = 3.15f / 3.f;
 
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr viz_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-  viz_cloud->points.resize(pc.points.size());
-  for (uint pt_idx=0; pt_idx<pc.points.size(); pt_idx++) {
-    viz_cloud->points[pt_idx].x = pc.points[pt_idx].x;
-    viz_cloud->points[pt_idx].y = pc.points[pt_idx].y;
-    viz_cloud->points[pt_idx].z = pc.points[pt_idx].z;
-    // std::cout << pc.points[pt_idx].curvature << ", " << max_curv << ", " << static_cast<int> (255. * log(pc.points[pt_idx].curvature) / log(max_curv)) << " || ";
-    float curv = std::min(max_curv, pc.points[pt_idx].curvature);
-    getJetColour(curv, 0., max_curv, viz_cloud->points[pt_idx]);
-    // viz_cloud->points[pt_idx].r = static_cast<int> (255. * log(pc.points[pt_idx].curvature / max_curv));
-    // viz_cloud->points[pt_idx].g = 255 - static_cast<int> (255. * log(pc.points[pt_idx].curvature) / log(max_curv));
-    // viz_cloud->points[pt_idx].b = 0;
-  }
+  viz_cloud->points.resize(mesh.polygons.size());
+  for (uint tri_idx=0; tri_idx<mesh.polygons.size(); tri_idx++) {
+    Eigen::Vector3f v = pc.points[mesh.polygons[tri_idx].vertices[0]].getVector3fMap();
+    v += pc.points[mesh.polygons[tri_idx].vertices[1]].getVector3fMap();
+    v += pc.points[mesh.polygons[tri_idx].vertices[2]].getVector3fMap();
+    v/= 3;
 
-  std::cout << std::endl;
+    viz_cloud->points[tri_idx].x = v(0);
+    viz_cloud->points[tri_idx].y = v(1);
+    viz_cloud->points[tri_idx].z = v(2);
+
+    getJetColour(face_angle[tri_idx], 0., max_angle, viz_cloud->points[tri_idx]);
+  }
 
   pcl::visualization::PointCloudColorHandlerRGBField<pcl::PointXYZRGB> rgb(viz_cloud);
   viewer->addPointCloud<pcl::PointXYZRGB> (viz_cloud, rgb, "cloud_curv");
@@ -184,13 +189,35 @@ void vizLRF(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
     v += pc.points[mesh.polygons[node_centroid].vertices[2]].getVector4fMap ();
     v /= 3;
 
-    Eigen::Matrix4f Trans;
-    Trans.setIdentity();
-    Trans.block<3,3>(0,0) = lrf[node_idx].transpose();
-    Trans.rightCols<1>() = v;
+    float scale = 0.05;
+    pcl::PointXYZ p, p_u, p_v, p_n;
+    p.x = v(0);
+    p.y = v(1);
+    p.z = v(2);
 
-    Eigen::Affine3f F;
-    F = Trans;
-    viewer->addCoordinateSystem(0.1, F, "lrf_"+std::to_string(node_idx));
+    p_u.x = v(0) + scale*lrf[node_idx](0, 0);
+    p_u.y = v(1) + scale*lrf[node_idx](0, 1);
+    p_u.z = v(2) + scale*lrf[node_idx](0, 2);
+
+    p_v.x = v(0) + scale*lrf[node_idx](1, 0);
+    p_v.y = v(1) + scale*lrf[node_idx](1, 1);
+    p_v.z = v(2) + scale*lrf[node_idx](1, 2);
+
+    p_n.x = v(0) + scale*lrf[node_idx](2, 0);
+    p_n.y = v(1) + scale*lrf[node_idx](2, 1);
+    p_n.z = v(2) + scale*lrf[node_idx](2, 2);
+
+    viewer->addArrow<pcl::PointXYZ, pcl::PointXYZ> (p_u, p, 1., 0., 0., false, "arrow_u_" + std::to_string(node_idx));
+    viewer->addArrow<pcl::PointXYZ, pcl::PointXYZ> (p_v, p, 0., 1., 0., false, "arrow_v_" + std::to_string(node_idx));
+    viewer->addArrow<pcl::PointXYZ, pcl::PointXYZ> (p_n, p, 0., 0., 1., false, "arrow_n_" + std::to_string(node_idx));
+
+    // Eigen::Matrix4f Trans;
+    // Trans.setIdentity();
+    // Trans.block<3,3>(0,0) = lrf[node_idx].transpose();
+    // Trans.rightCols<1>() = v;
+
+    // Eigen::Affine3f F;
+    // F = Trans;
+    // viewer->addCoordinateSystem(0.1, F, "lrf_"+std::to_string(node_idx));
   }
 }

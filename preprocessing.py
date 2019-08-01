@@ -3,7 +3,7 @@ from functools import partial
 import numpy as np
 
 from utils.params import params as p
-from py_graph_construction import PyGraph  # get_graph, get_graph_nd
+from py_graph_construction import PyGraph, NanNormals
 
 
 VERTEX_FEAT = Enum("VERTEX_FEAT", "L_ESF SPH COORDSSET")
@@ -34,6 +34,7 @@ p.define("neigh_size", 0.15)
 p.define("gridsize", 64)
 # p.define("scale", False)
 p.define("min_angle_z_normal", 0)
+p.define("angle_sampling", True)
 
 # Data transformation
 p.define("to_remove", 0.)
@@ -115,7 +116,7 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat, with_fn):
     gc = PyGraph(fn, nodes_nb=p.nodes_nb, debug=p.debug, gridsize=p.gridsize)
     # gc.initialize()
     # gc.sample_points(p.min_angle_z_normal)
-    adj_mat = gc.initialize_mesh(p.min_angle_z_normal, p.neigh_size)
+    adj_mat = gc.initialize_mesh(p.angle_sampling, p.neigh_size)
 
     if p.edge_feat_type == edge_feat.ROT_Z.name:
         edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)

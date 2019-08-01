@@ -6,6 +6,7 @@
 #include "scope_time.h"
 
 typedef pcl::PointXYZINormal PointT;
+typedef std::pair<uint, uint> Edge;
 
 
 class GraphConstructor
@@ -19,12 +20,17 @@ protected:
   std::vector<std::vector<int> > nodes_vertices_;
   std::vector<std::vector<int> > node_face_association_;
   std::vector<std::vector<bool> > node_vertex_association_;
+  std::unordered_map<Edge, std::array<int, 2>, boost::hash<Edge> > edge_to_triangle_;
   std::vector<std::vector<uint> > triangle_neighbors_;
   std::vector<int> sampled_indices_;
   std::vector<bool> valid_indices_;
   std::vector<std::vector<std::vector<int> > > lut_;
   std::vector<Eigen::Matrix3f> lrf_;
+  std::vector<Eigen::Matrix3f> zlrf_;
   std::vector<Eigen::Vector3f> nodes_mean_;
+  std::vector<Eigen::Vector3f> face_normals_;
+  std::vector<float> face_angle_;
+  std::vector<std::vector<uint> > boundary_loops_;
   double scale_;
 
   // Parameters
@@ -32,17 +38,15 @@ protected:
   unsigned int nodes_nb_;
   bool debug_;
 
-  Parameters params_;
 
-
-  void computePcaLrf();
+  void computeNormalAlignedPcaLrf();
+  void computeVerticesCurvature();
   void areaBasedNodeSampling(float target_area);
-  void curvBasedNodeSampling(float target_curv);
-  void extractNodeBoundaries(const uint node_idx, Eigen::VectorXi & bnd);
+  void angleBasedNodeSampling(float target_angle);
+  void extractNodeBoundaries();
 
 public:
   GraphConstructor(std::string filename,
-                   Parameters params,
                    unsigned int gridsize,
                    unsigned int nodes_nb,
                    bool debug) :
@@ -52,8 +56,7 @@ public:
     tree_(new pcl::search::KdTree<PointT>),
     gridsize_(gridsize),
     nodes_nb_(nodes_nb),
-    debug_(debug),
-    params_(params) {
+    debug_(debug) {
       // Reserve space for the neighborhood of nodes
       nodes_elts_.reserve(nodes_nb_);
 
@@ -64,7 +67,7 @@ public:
     }
 
   // General
-  void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size);
+  int initializeMesh(bool angle_sampling, double* adj_mat, float neigh_size);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
   void vizGraph(double* adj_mat, VizParams viz_params);

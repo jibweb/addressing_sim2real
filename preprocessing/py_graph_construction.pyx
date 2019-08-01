@@ -26,26 +26,13 @@ cdef extern from "graph_construction.h":
         bint tconv_idx
         bint lscm
     ctypedef struct VizParams:
+        bool curvature
         bool graph_skeleton
+        bool lrf
         bool mesh
         bool nodes
-    ctypedef struct Parameters:
-        # Graph structure
-        # unsigned int nodes_nb
-        # unsigned int feat_nb
-        # unsigned int edge_feat_nb
-        # float min_angle_z_normal
-        # float neigh_size
-        # int neigh_nb
-        # bint feats_3d
-        # bint edge_feats
-        # bint mesh
-        bint scale
-        # General
-        # unsigned int gridsize
-        # bint viz
-        # bint viz_small_spheres
-        # bint debug
+        bool normals
+    ctypedef struct TransfoParams:
         # PC transformations
         float to_remove
         unsigned int to_keep
@@ -53,14 +40,14 @@ cdef extern from "graph_construction.h":
         float noise_std
         unsigned int rotation_deg
     cdef cppclass GraphConstructor:
-        GraphConstructor(string filename, Parameters,
+        GraphConstructor(string filename,
                          unsigned int gridsize,
                          unsigned int nodes_nb,
                          bool debug) except +
 
         # General
         # void initialize()
-        void initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size)
+        int initializeMesh(bool curv_sampling, double* adj_mat, float neigh_size)
         void correctAdjacencyForValidity(double* adj_mat)
         void getValidIndices(int* valid_indices)
         void vizGraph(double* adj_mat, VizParams)
@@ -81,38 +68,29 @@ cdef extern from "graph_construction.h":
         void tconvEdgeFeatures(int* tconv_idx)
 
 
+class NanNormals(Exception):
+    """Nan found in the normal of the model"""
+    pass
+
+
 cdef class PyGraph:
     cdef GraphConstructor*c_graph  # Hold a C++ instance which we're wrapping
     cdef unsigned int nodes_nb
 
     def __cinit__(self, string fn, nodes_nb=16, debug=True, gridsize=64):
-        cdef Parameters params
-        # params.feat_nb = 800
-        # params.edge_feat_nb = 3
-        # params.min_angle_z_normal = 10
-        # params.neigh_size = 0.401
-        # params.neigh_nb = 4
-        # params.feats_3d = True
-        # params.edge_feats = True
-        # params.mesh = False
-        # params.viz = False
-        # params.viz_small_spheres = True
-        params.to_remove = 0.
-        params.to_keep = 20000
-        params.occl_pct = 0.
-        params.noise_std = 0.
-        params.rotation_deg = 0
-
         self.nodes_nb = nodes_nb
-        self.c_graph = new GraphConstructor(fn, params, gridsize, nodes_nb, debug)
+        self.c_graph = new GraphConstructor(fn, gridsize, nodes_nb, debug)
 
-    def initialize_mesh(self, float min_angle_z_normal, float neigh_size):
+    def initialize_mesh(self, bool angle_sampling, float neigh_size):
         cdef np.ndarray[double, ndim=2, mode="c"] adj_mat = np.zeros([self.nodes_nb,
                                                                       self.nodes_nb],
                                                                      dtype=np.float64)
-        self.c_graph.initializeMesh(min_angle_z_normal, &adj_mat[0, 0], neigh_size)
-        return adj_mat
+        result = self.c_graph.initializeMesh(angle_sampling, &adj_mat[0, 0], neigh_size)
 
+        if result == -1:
+            raise NanNormals
+        else:
+            return adj_mat
     # def sample_points(self, float min_angle_z_normal):
     #     self.c_graph.samplePoints(min_angle_z_normal)
 
@@ -127,9 +105,12 @@ cdef class PyGraph:
 
     def viz_graph(self, np.ndarray[np.float64_t, ndim=2] adj_mat, viz_config):
         cdef VizParams viz_params
+        viz_params.curvature = viz_config.get("curvature", False)
         viz_params.graph_skeleton = viz_config.get("graph_skeleton", False)
-        viz_params.mesh = viz_config.get("mesh")
-        viz_params.nodes = viz_config.get("nodes")
+        viz_params.lrf = viz_config.get("lrf", False)
+        viz_params.mesh = viz_config.get("mesh", False)
+        viz_params.nodes = viz_config.get("nodes", False)
+        viz_params.normals = viz_config.get("normals", False)
 
         self.c_graph.vizGraph(&adj_mat[0, 0], viz_params)
 

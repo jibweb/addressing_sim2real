@@ -31,10 +31,9 @@
 ////////////////////////////////////////////// GENERAL ///////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-typedef std::pair<uint, uint> Edge;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat, float neigh_size) {
+int GraphConstructor::initializeMesh(bool angle_sampling, double* adj_mat, float sampling_target_val) {
 
   if (!debug_)
     pcl::console::setVerbosityLevel(pcl::console::L_ALWAYS);
@@ -45,6 +44,14 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     ScopeTime t1("Tinyply file opening", debug_);
     loadPLY(filename_, *pc_, *mesh_);
   }
+
+
+  if (debug_)
+    std::cout << "NOT checking for NaN in normals !" << std::endl;
+  // for (uint pt_idx=0; pt_idx<pc_->points.size(); pt_idx++) {
+  //   if (std::isnan(pc_->points[pt_idx].normal_x) || std::isnan(pc_->points[pt_idx].normal_y) || std::isnan(pc_->points[pt_idx].normal_z))
+  //     return -1;
+  // }
 
   if (debug_) {
     std::cout << "PolygonMesh: " << mesh_->polygons.size() << " triangles" << std::endl;
@@ -60,7 +67,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
 
   // TODO : probably should be a param. Weird condition for meshes with triangles of variable areas
-  uint min_node_size = 120;
+  uint min_node_size = 256;
   nodes_elts_.resize(nodes_nb_);
   for (uint i=0; i < nodes_elts_.size(); i++)
     nodes_elts_[i].reserve(min_node_size);
@@ -71,8 +78,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   valid_indices_.resize(nodes_nb_);
 
   // --- Edge connectivity ----------------------------------------------------
-  std::unordered_map<Edge, std::array<int, 2>, boost::hash<Edge> > edge_to_triangle;
-  edge_to_triangle.reserve(3*mesh_->polygons.size());
+  edge_to_triangle_.reserve(3*mesh_->polygons.size());
   triangle_neighbors_.resize(mesh_->polygons.size());
 
   {
@@ -90,15 +96,15 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
 
         Edge edge_id(idx2,idx1);
 
-        auto arr = edge_to_triangle.find(edge_id);
+        auto arr = edge_to_triangle_.find(edge_id);
 
-        if (arr != edge_to_triangle.end()) {
+        if (arr != edge_to_triangle_.end()) {
           // Edge exists already
           arr->second[1] = tri_idx;
         } else {
           // Edge doesn't exist yet
-          edge_to_triangle[edge_id][0] = tri_idx;
-          edge_to_triangle[edge_id][1] = -1;
+          edge_to_triangle_[edge_id][0] = tri_idx;
+          edge_to_triangle_[edge_id][1] = -1;
         }
       }
     }
@@ -107,7 +113,7 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     for (uint i=0; i<triangle_neighbors_.size(); i++)
       triangle_neighbors_[i].reserve(3);
 
-    for(auto& it : edge_to_triangle) {
+    for(auto& it : edge_to_triangle_) {
       // TODO slightly shitty way of resolving non manifold meshes
       // if (it.second.size() >= 2) {
       if (it.second[1] != -1) {
@@ -118,7 +124,10 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
   }
 
   // BFS sampling with area as a stopping criterion
-  areaBasedNodeSampling(neigh_size);
+  if (angle_sampling)
+    angleBasedNodeSampling(sampling_target_val);
+  else
+    areaBasedNodeSampling(sampling_target_val);
 
   {
     ScopeTime t3("Node association", debug_);
@@ -160,31 +169,13 @@ void GraphConstructor::initializeMesh(float min_angle_z_normal, double* adj_mat,
     }
   }
 
-
-  // TODO =====================================================================
-  // // Fill in the vertex to node association
-  // node_vertex_association_.resize(pc_->points.size(), std::vector<bool>(nodes_nb_, false));
-  // // node_vertex_association_.resize(pc_->points.size());
-  // // for (uint i=0; i<node_vertex_association_.size(); i++)
-  // //   node_vertex_association_[i].resize(nodes_nb_, false);
-
-  // for (uint i=0; i<node_face_association_.size(); i++) {
-  //   for (uint j=0; j<3; j++) {
-  //     uint vertex_idx = mesh_->polygons[i].vertices[j];
-  //     for (uint k=0; k<node_face_association_[i].size(); k++) {
-  //       uint node_idx = node_face_association_[i][k];
-  //       node_vertex_association_[vertex_idx][node_idx] = true;
-  //     }
-  //   }
-  // }
-
-  // \TODO =====================================================================
-
   // Update the valid indices vector
   for (uint i=0; i < sampled_indices_.size(); i++) {
     valid_indices_[i] = true;
     adj_mat[i*nodes_nb_ + i] = true;
   }
+
+  return 0;
 }
 
 
@@ -318,143 +309,338 @@ void GraphConstructor::areaBasedNodeSampling(float target_area) {
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::curvBasedNodeSampling(float target_curv) {
+void GraphConstructor::angleBasedNodeSampling(float target_angle) {
+  ScopeTime t("Angle-based node sampling", debug_);
+
+  float total_angle = 0.f;
+  face_angle_.resize(mesh_->polygons.size(), 0.f);
+  face_normals_.resize(mesh_->polygons.size());
+
+  // Get the normals per face
+  for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+    face_normals_[tri_idx] = pc_->points[mesh_->polygons[tri_idx].vertices[0]].getNormalVector3fMap();
+    face_normals_[tri_idx] += pc_->points[mesh_->polygons[tri_idx].vertices[1]].getNormalVector3fMap();
+    face_normals_[tri_idx] += pc_->points[mesh_->polygons[tri_idx].vertices[2]].getNormalVector3fMap();
+
+    face_normals_[tri_idx].normalize();
+  }
+
+  // Get the average angle per face
+  for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+    float avg_angle = 0.f;
+    for (uint neigh_idx=0; neigh_idx<triangle_neighbors_[tri_idx].size(); neigh_idx++) {
+      uint neigh_tri = triangle_neighbors_[tri_idx][neigh_idx];
+      avg_angle += acos(std::min(1.0f, fabs(face_normals_[tri_idx].dot(face_normals_[neigh_tri]))));
+
+      if (std::isnan(avg_angle))
+        std::cout << "NaN angle: "
+                  << acos(fabs(face_normals_[tri_idx].dot(face_normals_[neigh_idx]))) << ", "
+                  << acos(std::min(1.0f, fabs(face_normals_[tri_idx].dot(face_normals_[neigh_idx])))) << ", "
+                  << fabs(face_normals_[tri_idx].dot(face_normals_[neigh_idx])) << ", "
+                  << face_normals_[tri_idx].dot(face_normals_[neigh_idx]) << ", \n"
+                  << face_normals_[tri_idx] << ", \n"
+                  << face_normals_[neigh_idx] << " \n" << std::endl;
+
+    }
+
+    if (triangle_neighbors_[tri_idx].size() > 0)
+      face_angle_[tri_idx] = avg_angle / static_cast<float>(triangle_neighbors_[tri_idx].size());
+
+    total_angle += face_angle_[tri_idx];
+  }
+
+
+  // Get sorted indices based on the face angle
+  // std::vector<uint> sorted_indices(face_angle_.size());
+  // for (uint idx=0; idx<face_angle_.size(); idx++)
+  //   sorted_indices[idx] = idx;
+
+  // // sort indexes based on comparing values in face_angle_ (max first)
+  // std::sort(sorted_indices.begin(), sorted_indices.end(),
+  //      [&face_angle_](size_t i1, size_t i2) {return face_angle_[i1] > face_angle_[i2];});
+
+
+  // === BFS angle sampling  ==================================================
+  // --- Seed for random sampling ---------------------------------------------
+  struct timeval time;
+  gettimeofday(&time,NULL);
+  srand((time.tv_sec * 1000) + (time.tv_usec / 1000));
+  std::vector<bool> samplable_face(mesh_->polygons.size(), true);
+  int total_samplable_face = mesh_->polygons.size();
+
+  // --- Do a BFS per node in the graph ---------------------------------------
+  node_face_association_.resize(mesh_->polygons.size());
+  for (uint i=0; i<node_face_association_.size(); i++)
+    node_face_association_[i].reserve(4);
+
+
+  if (debug_)
+    std::cout << "Target angle: " << target_angle << " / Total angle: " << total_angle  << "\n"
+              << "Node \t| Idx  \t| Size\t| Cum. ang.\t| Rem. faces "
+              << "\n----------------------------------------------------" << std::endl;
+
+  for (uint node_idx=0; node_idx < nodes_nb_; node_idx++) {
+    // --- Select a node and enqueue it ---------------------------------------
+    if (total_samplable_face == 0)
+      break;
+
+    uint sampled_idx = mesh_->polygons.size() + 1;
+
+    // Purely random node sampling
+    int rdn_weight = std::max(static_cast <int> (rand() % total_samplable_face), 1);
+    for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+      if (samplable_face[tri_idx])
+        rdn_weight--;
+
+      if (rdn_weight <= 0) {
+        sampled_idx = tri_idx;
+        break;
+      }
+    }
+
+    // Max angle based node sampling
+    // for (uint i=0; i<sorted_indices.size(); i++) {
+    //   if (samplable_face[sorted_indices[i]]) {
+    //     sampled_idx = sorted_indices[i];
+    //     break;
+    //   }
+    // }
+
+    // Failed to sample a point
+    if (sampled_idx == (mesh_->polygons.size() + 1))
+      break;
+
+    sampled_indices_.push_back(sampled_idx);
+
+    // --- Setup for BFS ------------------------------------------------------
+    std::deque<int> queue;
+    queue.push_back(sampled_idx);
+
+    float sampled_angle = 0.;
+
+    std::vector<bool> visited(mesh_->polygons.size(), false);
+    std::vector<bool> vertex_visited(pc_->points.size(), false);
+    visited[sampled_idx] = true;
+    vertex_visited[mesh_->polygons[sampled_idx].vertices[0]] = true;
+    vertex_visited[mesh_->polygons[sampled_idx].vertices[1]] = true;
+    vertex_visited[mesh_->polygons[sampled_idx].vertices[2]] = true;
+
+    // --- BFS over the graph to extract the neighborhood ---------------------
+    while(!queue.empty() && sampled_angle < target_angle) {
+      // Dequeue a face
+      int s = queue.front();
+      queue.pop_front();
+
+      // Update the curv
+      nodes_elts_[node_idx].push_back(s);
+      if (samplable_face[s])
+        total_samplable_face--;
+      samplable_face[s] = false;
+      sampled_angle += std::min(face_angle_[s], 100.f);
+
+      // For each edge, find the unvisited neighbor and visit all of them
+      for (uint neigh_idx=0; neigh_idx<triangle_neighbors_[s].size(); neigh_idx++) {
+        uint neigh_tri = triangle_neighbors_[s][neigh_idx];
+
+        if (visited[neigh_tri])
+          continue;
+
+        // Prevent the node from wrapping around something and merging on the other side
+        // The detection criterion is as follow:
+        //   - if the  3 vertices of the neighboring face are already visited AND
+        //   - the neighboring triangle has two unvisited neighbors, it's wrapping around
+        if (vertex_visited[mesh_->polygons[neigh_tri].vertices[0]] &&
+            vertex_visited[mesh_->polygons[neigh_tri].vertices[1]] &&
+            vertex_visited[mesh_->polygons[neigh_tri].vertices[2]] &&
+            triangle_neighbors_[neigh_tri].size() == 3) {
+          uint neigh_neigh_visited = static_cast<int>(visited[triangle_neighbors_[neigh_tri][0]]) +
+                                     static_cast<int>(visited[triangle_neighbors_[neigh_tri][1]]) +
+                                     static_cast<int>(visited[triangle_neighbors_[neigh_tri][2]]);
+          if (neigh_neigh_visited == 1)
+            continue;
+        }
+
+        vertex_visited[mesh_->polygons[neigh_tri].vertices[0]] = true;
+        vertex_visited[mesh_->polygons[neigh_tri].vertices[1]] = true;
+        vertex_visited[mesh_->polygons[neigh_tri].vertices[2]] = true;
+        visited[neigh_tri] = true;
+        queue.push_back(neigh_tri);
+      }
+    } // while queue not empty
+
+    // If the node sampled is too small, undo the sampling and the adjacency and try again
+    if (sampled_angle < target_angle/10.f) {
+      nodes_elts_[node_idx].clear();
+      sampled_indices_.pop_back();
+
+      if (debug_)
+        std::cout << "Deleted node with angle: " << sampled_angle << "/" << target_angle/10.f << ", rem. sampl. faces " << total_samplable_face << std::endl;
+
+      node_idx--;
+      continue;
+    } else {
+      for (auto elt : nodes_elts_[node_idx])
+        node_face_association_[elt].push_back(node_idx);
+    }
+
+    if (debug_) {
+      std::cout << node_idx
+                << "\t| " << sampled_idx
+                << "\t| " << nodes_elts_[node_idx].size()
+                << "\t| " << sampled_angle
+                << "\t| " << total_samplable_face
+                << std::endl;
+    }
+  } // for each node
+
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::extractNodeBoundaries(const uint node_idx, Eigen::VectorXi & bnd) {
-  // --- Prepare the added vector ---------------------------------------------
-  std::vector<bool> added(mesh_->polygons.size(), false);
-  for (uint i=0; i<nodes_elts_[node_idx].size(); i++)
-    added[nodes_elts_[node_idx][i]] = true;
+void GraphConstructor::extractNodeBoundaries() {
+  ScopeTime t("Node boundaries extraction", debug_);
+  boundary_loops_.resize(sampled_indices_.size());
+
+  for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
+    // --- Prepare the added vector ---------------------------------------------
+    std::vector<bool> added(mesh_->polygons.size(), false);
+    for (uint i=0; i<nodes_elts_[node_idx].size(); i++)
+      added[nodes_elts_[node_idx][i]] = true;
 
 
-  // --- Find the border vertices from the border faces -----------------------
-  std::set<uint> border_vertex;
-  std::unordered_map<uint, std::vector<uint> > border_vertex_neighbor;
+    // --- Find the border vertices from the border faces -----------------------
+    std::set<uint> border_vertex;
+    std::unordered_map<uint, std::vector<uint> > border_vertex_neighbor;
 
-  for (uint elt_idx=0; elt_idx < nodes_elts_[node_idx].size(); elt_idx++) {
-    uint face_idx = nodes_elts_[node_idx][elt_idx];
+    for (uint elt_idx=0; elt_idx < nodes_elts_[node_idx].size(); elt_idx++) {
+      uint face_idx = nodes_elts_[node_idx][elt_idx];
 
-    for (uint i=0; i<triangle_neighbors_[face_idx].size(); i++) {
-      uint neigh_tri = triangle_neighbors_[face_idx][i];
+      for (uint edge_idx=0; edge_idx<3; edge_idx++) {
+        uint idx1 = mesh_->polygons[face_idx].vertices[edge_idx];
+        uint idx2 = mesh_->polygons[face_idx].vertices[(edge_idx+1)%3];
 
-      if (added[neigh_tri])
-        continue;
+        if (idx1 > idx2) {
+          uint tmp = idx1;
+          idx1 = idx2;
+          idx2 = tmp;
+        }
 
-      uint idx1, idx2;
-      idx1 = idx2 = pc_->points.size() + 1;
-      for (uint i=0; i<3; i++) {
-        for (uint j=0; j<3; j++) {
-          if (mesh_->polygons[face_idx].vertices[i] == mesh_->polygons[neigh_tri].vertices[j]) {
-            if (idx1 == pc_->points.size() + 1)
-              idx1 = mesh_->polygons[face_idx].vertices[i];
-            else
-              idx2 = mesh_->polygons[face_idx].vertices[i];
+        Edge edge_id(idx2,idx1);
+        auto arr = edge_to_triangle_.find(edge_id);
+
+        if (arr == edge_to_triangle_.end()) {
+          std::cout << "Oh my god oh my god oh my god !! This edge was not added yet !!!" << std::endl;
+          continue;
+        }
+
+        // An actual border of the original mesh OR One of the two neighboring faces isn't part of the node
+        if (arr->second[1] == -1 || (!added[arr->second[0]]) || (!added[arr->second[1]])) {
+          border_vertex.insert(idx1);
+          border_vertex.insert(idx2);
+          border_vertex_neighbor[idx1].push_back(idx2);
+          border_vertex_neighbor[idx2].push_back(idx1);
+        }
+      }
+    }
+
+    if (border_vertex.size() == 0)
+      return;
+
+    for (auto border_vert : border_vertex)
+      boundary_loops_[node_idx].push_back(border_vert);
+
+
+    // --- Follow the loop from border vertices ---------------------------------
+    std::unordered_map<Edge, bool, boost::hash<Edge>> visited;
+    std::vector<std::vector<uint> > boundary_loops;
+    uint loop_idx = 0;
+    uint full_size = 0;
+    uint max_loop=0, max_loop_idx=0;
+
+    do {
+      boundary_loops.push_back( std::vector<uint>() );
+
+      // Extract the first node with unvisited edges
+      uint start_vertex = *border_vertex.begin();
+
+      for (auto border_vert : border_vertex) {
+        for (uint neigh_idx=0; neigh_idx < border_vertex_neighbor[border_vert].size(); neigh_idx++) {
+          uint neigh = border_vertex_neighbor[border_vert][neigh_idx];
+
+          uint idx1, idx2;
+          if (neigh > border_vert) {
+            idx1 = border_vert;
+            idx2 = neigh;
+          } else {
+            idx1 = neigh;
+            idx2 = border_vert;
+          }
+
+          Edge edge_id(idx2,idx1);
+
+          if (!visited[edge_id]) {
+            start_vertex = border_vert;
+            break;
           }
         }
       }
 
-      border_vertex.insert(idx1);
-      border_vertex.insert(idx2);
-      border_vertex_neighbor[idx1].push_back(idx2);
-      border_vertex_neighbor[idx2].push_back(idx1);
-    }
-  }
+      // From that first node, follow the boundary
+      uint cur_vertex = start_vertex;
+      uint prev_vertex = start_vertex;
 
-  if (border_vertex.size() == 0)
-    return;
+      do {
+        boundary_loops[loop_idx].push_back(cur_vertex);
+        prev_vertex = cur_vertex;
 
+        for (uint neigh_idx=0; neigh_idx < border_vertex_neighbor[cur_vertex].size(); neigh_idx++) {
+          uint neigh = border_vertex_neighbor[cur_vertex][neigh_idx];
 
-  // --- Follow the loop from border vertices ---------------------------------
-  std::unordered_map<Edge, bool, boost::hash<Edge>> visited;
-  std::vector<std::vector<uint> > boundary_loops;
-  uint loop_idx = 0;
-  uint full_size = 0;
-  uint max_loop=0, max_loop_idx=0;
+          uint idx1, idx2;
+          if (neigh > cur_vertex) {
+            idx1 = cur_vertex;
+            idx2 = neigh;
+          } else {
+            idx1 = neigh;
+            idx2 = cur_vertex;
+          }
 
-  do {
-    boundary_loops.push_back( std::vector<uint>() );
+          Edge edge_id(idx2,idx1);
 
-    // Extract the first node with unvisited edges
-    uint start_vertex = *border_vertex.begin();
-
-    for (auto border_vert : border_vertex) {
-      for (uint neigh_idx=0; neigh_idx < border_vertex_neighbor[border_vert].size(); neigh_idx++) {
-        uint neigh = border_vertex_neighbor[border_vert][neigh_idx];
-
-        uint idx1, idx2;
-        if (neigh > border_vert) {
-          idx1 = border_vert;
-          idx2 = neigh;
-        } else {
-          idx1 = neigh;
-          idx2 = border_vert;
+          if (!visited[edge_id] && neigh != prev_vertex) {
+            cur_vertex = neigh;
+            visited[edge_id] = true;
+            break;
+          }
         }
+      } while (cur_vertex != start_vertex && cur_vertex != prev_vertex);
 
-        Edge edge_id(idx2,idx1);
-
-        if (!visited[edge_id]) {
-          start_vertex = border_vert;
-          break;
-        }
+      if (boundary_loops[loop_idx].size() > max_loop) {
+        max_loop = boundary_loops[loop_idx].size();
+        max_loop_idx = loop_idx;
       }
-    }
 
-    // From that first node, follow the boundary
-    uint cur_vertex = start_vertex;
-    uint prev_vertex = start_vertex;
+      full_size += boundary_loops[loop_idx].size();
+      loop_idx++;
 
-    do {
-      boundary_loops[loop_idx].push_back(cur_vertex);
-      prev_vertex = cur_vertex;
+    } while (full_size < border_vertex.size());
 
-      for (uint neigh_idx=0; neigh_idx < border_vertex_neighbor[cur_vertex].size(); neigh_idx++) {
-        uint neigh = border_vertex_neighbor[cur_vertex][neigh_idx];
+    // std::cout << "Boundary loop vertices: " << boundary_loops[max_loop_idx].size() << " / " << full_size << " / " << border_vertex.size() << std::endl;
 
-        uint idx1, idx2;
-        if (neigh > cur_vertex) {
-          idx1 = cur_vertex;
-          idx2 = neigh;
-        } else {
-          idx1 = neigh;
-          idx2 = cur_vertex;
-        }
-
-        Edge edge_id(idx2,idx1);
-
-        if (!visited[edge_id] && neigh != prev_vertex) {
-          cur_vertex = neigh;
-          visited[edge_id] = true;
-          break;
-        }
-      }
-    } while (cur_vertex != start_vertex && cur_vertex != prev_vertex);
-
-    if (boundary_loops[loop_idx].size() > max_loop) {
-      max_loop = boundary_loops[loop_idx].size();
-      max_loop_idx = loop_idx;
-    }
-
-    full_size += boundary_loops[loop_idx].size();
-    loop_idx++;
-
-  } while (full_size < border_vertex.size());
-
-  // std::cout << "Boundary loop vertices: " << boundary_loops[max_loop_idx].size() << " / " << full_size << " / " << border_vertex.size() << std::endl;
-
-  bnd.resize(boundary_loops[max_loop_idx].size());
-  for (uint i=0; i<boundary_loops[max_loop_idx].size(); i++)
-    bnd(i) = boundary_loops[max_loop_idx][i];
+    boundary_loops_[node_idx].resize(boundary_loops[max_loop_idx].size());
+    for (uint i=0; i<boundary_loops[max_loop_idx].size(); i++)
+      boundary_loops_[node_idx][i] = boundary_loops[max_loop_idx][i];
+  } // endfor node_idx in sampled_indices
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::computePcaLrf() {
+void GraphConstructor::computeNormalAlignedPcaLrf() {
   ScopeTime t("PCA LRF computation", debug_);
   lrf_.resize(nodes_elts_.size());
+  zlrf_.resize(nodes_elts_.size());
   nodes_mean_.resize(nodes_elts_.size());
+  Eigen::Vector3f z(0.f, 0.f, 1.f);
 
   for (uint node_idx=0; node_idx<nodes_elts_.size(); node_idx++) {
     if (nodes_vertices_[node_idx].size() < 3)
@@ -466,12 +652,88 @@ void GraphConstructor::computePcaLrf() {
     pca.setInputCloud(pc_);
     pca.setIndices(indices);
 
-    // Eigen::Matrix3f eigvecs = pca.getEigenVectors();
     lrf_[node_idx] = pca.getEigenVectors().transpose();
-    lrf_[node_idx].row(1).matrix () = lrf_[node_idx].row(2).cross (lrf_[node_idx].row(0));
 
-    // Eigen::Vector4f mean = pca.getMean();
+    // Align with normals
+    uint sampled_nb = 100;
+    uint plusNormals = 0;
+    for (uint i=0; i<sampled_nb; i++) {
+      uint idx = static_cast<uint>(rand() % nodes_vertices_[node_idx].size());
+      uint pt_idx = nodes_vertices_[node_idx][idx];
+      Eigen::Vector3f v = pc_->points[pt_idx].getVector3fMap();
+
+      if (v.dot(lrf_[node_idx].row(2)) > 0.)
+        plusNormals++;
+    }
+
+    // If less than half aligns, flip the LRF
+    if (2*plusNormals < sampled_nb)
+      lrf_[node_idx].row(2) = -lrf_[node_idx].row(2);
+
+    // Update the properties of the graph
+    lrf_[node_idx].row(1).matrix () = lrf_[node_idx].row(2).cross (lrf_[node_idx].row(0));
     nodes_mean_[node_idx] = pca.getMean().head<3>();
+
+
+    // Z-based LRF
+    Eigen::Vector3f node_normal = lrf_[node_idx].row(2);
+    node_normal(2) = 0.f;
+    node_normal.normalize();
+    zlrf_[node_idx].row(0) = node_normal;
+    zlrf_[node_idx].row(1) = z.cross(node_normal);
+    zlrf_[node_idx].row(2) = z;
+  }
+}
+
+
+
+void GraphConstructor::computeVerticesCurvature() {
+  ScopeTime t("Vertices curvature computation", debug_);
+  // Edge curvature
+  std::unordered_map<Edge, float, boost::hash<Edge> > edge_curv;
+  for (uint tri_idx=0; tri_idx<mesh_->polygons.size(); tri_idx++) {
+    for(uint edge_idx=0; edge_idx<3; edge_idx++) {
+      uint idx1 = mesh_->polygons[tri_idx].vertices[edge_idx];
+      uint idx2 = mesh_->polygons[tri_idx].vertices[(edge_idx+1)%3];
+
+      if (idx1 > idx2) {
+        uint tmp = idx1;
+        idx1 = idx2;
+        idx2 = tmp;
+      }
+
+      Edge edge_id(idx2,idx1);
+
+      auto arr = edge_curv.find(edge_id);
+
+      if (arr == edge_curv.end()) {
+        Eigen::Vector3f v1 = pc_->points[idx1].getVector3fMap();
+        Eigen::Vector3f v2 = pc_->points[idx2].getVector3fMap();
+        Eigen::Vector3f n1 = pc_->points[idx1].getNormalVector3fMap();
+        Eigen::Vector3f n2 = pc_->points[idx2].getNormalVector3fMap();
+        float signed_curv = (n1 - n2).dot(v1 - v2);
+        signed_curv /= (v1 - v2).squaredNorm();
+        edge_curv[edge_id] = signed_curv;
+      }
+    }
+  }
+
+  for (uint pt_idx=0; pt_idx<pc_->points.size(); pt_idx++) {
+    pc_->points[pt_idx].curvature = 0.f;
+  }
+
+  // Accumulate curvature for each vertex based on the edge curvature it belongs to
+  std::vector<int> vertex_edge_count(pc_->points.size(), 0);
+  for (auto& it : edge_curv){
+    pc_->points[it.first.first].curvature += fabs(it.second);
+    pc_->points[it.first.second].curvature += fabs(it.second);
+    vertex_edge_count[it.first.first]++;
+    vertex_edge_count[it.first.second]++;
+  }
+
+  // Normalize curv by number of edge involved
+  for (uint pt_idx=0; pt_idx<pc_->points.size(); pt_idx++) {
+    pc_->points[pt_idx].curvature /= vertex_edge_count[pt_idx];
   }
 }
 
@@ -641,15 +903,39 @@ void GraphConstructor::rotZEdgeFeatures(double* edge_feats, float min_angle_z_no
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
+  // TODO =====================================================================
+  // Fill in the vertex to node association
+  node_vertex_association_.resize(pc_->points.size(), std::vector<bool>(nodes_nb_, false));
+  // node_vertex_association_.resize(pc_->points.size());
+  // for (uint i=0; i<node_vertex_association_.size(); i++)
+  //   node_vertex_association_[i].resize(nodes_nb_, false);
+
+  for (uint i=0; i<node_face_association_.size(); i++) {
+    for (uint j=0; j<3; j++) {
+      uint vertex_idx = mesh_->polygons[i].vertices[j];
+      for (uint k=0; k<node_face_association_[i].size(); k++) {
+        uint node_idx = node_face_association_[i][k];
+        node_vertex_association_[vertex_idx][node_idx] = true;
+      }
+    }
+  }
+  // \TODO =====================================================================
+
+
   ScopeTime t("TConv edge features computation", debug_);
 
   if (lrf_.size() == 0)
-    computePcaLrf();
+    computeNormalAlignedPcaLrf();
+
+  if (boundary_loops_.size() == 0)
+    extractNodeBoundaries();
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
 
     Eigen::VectorXi bnd;
-    extractNodeBoundaries(node_idx, bnd);
+    bnd.resize(boundary_loops_[node_idx].size());
+    for (uint i=0; i < boundary_loops_[node_idx].size(); i++)
+      bnd(i) = boundary_loops_[node_idx][i];
 
     if (bnd.size() == 0) {
       if (debug_)
@@ -1189,7 +1475,7 @@ void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, ui
 
   } // -- for each node
 #endif
-} // -- GraphConstructor::projNodeFeatures
+} // GraphConstructor::projNodeFeatures
 
 
 
@@ -1199,11 +1485,12 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
 
   // If necessary, compute the LRF
   if (lrf_.size() == 0)
-    computePcaLrf();
+    computeNormalAlignedPcaLrf();
+
 
   for (uint node_idx=0; node_idx < sampled_indices_.size(); node_idx++) {
-
     uint face_nb = nodes_elts_[node_idx].size();
+    float scale = 0.f;
     for (uint feat_idx=0; feat_idx<feat_nb; feat_idx++) {
       uint rand_idx = rand() % face_nb;
 
@@ -1220,7 +1507,11 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
       Eigen::Vector3f p2 = pc_->points[mesh_->polygons[nodes_elts_[node_idx][rand_idx]].vertices[2]].getVector3fMap();
 
       Eigen::Vector3f coords = u*p0 + v*p1 + w*p2;
-      Eigen::Vector3f proj_coords = lrf_[node_idx] * (coords - nodes_mean_[node_idx]);
+      // Eigen::Vector3f proj_coords = lrf_[node_idx] * (coords - nodes_mean_[node_idx]);
+      Eigen::Vector3f proj_coords = zlrf_[node_idx] * (coords - nodes_mean_[node_idx]);
+
+      if (proj_coords.norm() > scale)
+        scale = proj_coords.norm();
 
       result[node_idx][num_channels*feat_idx + 0] = proj_coords(0);
       result[node_idx][num_channels*feat_idx + 1] = proj_coords(1);
@@ -1228,6 +1519,12 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
 
       if (num_channels == 4)
         result[node_idx][num_channels*feat_idx + 3] = coords(2);
+    }
+
+    for (uint feat_idx=0; feat_idx<feat_nb; feat_idx++) {
+      result[node_idx][num_channels*feat_idx + 0] /= scale;
+      result[node_idx][num_channels*feat_idx + 1] /= scale;
+      result[node_idx][num_channels*feat_idx + 2] /= scale;
     }
   } // -- for each node
 } // -- GraphConstructor::coordsNodeFeatures
@@ -1249,14 +1546,30 @@ void GraphConstructor::vizGraph(double* adj_mat, VizParams viz_params) {
     viewer->setBackgroundColor (0, 0, 0);
     viewer->addCoordinateSystem (1., "coords", 0);
 
+    if (viz_params.curvature)
+      vizFaceAngle(viewer, *pc_, *mesh_, face_angle_);
+
     if (viz_params.graph_skeleton)
       vizGraphSkeleton<PointT>(viewer, *pc_, *mesh_, adj_mat, sampled_indices_, nodes_nb_);
+
+    if (viz_params.lrf) {
+      // If necessary, compute the LRF
+      if (lrf_.size() == 0)
+        computeNormalAlignedPcaLrf();
+      vizLRF(viewer, *pc_, *mesh_, sampled_indices_, lrf_);
+    }
+
+    if (viz_params.normals)
+      viewer->addPointCloudNormals<PointT, PointT> (pc_, pc_, 1, 0.05, "normals");
 
     if (viz_params.mesh)
       vizMesh<PointT>(viewer, *pc_, *mesh_);
 
-    if (viz_params.nodes)
-      vizNodes<PointT>(viewer, *pc_, *mesh_, nodes_vertices_, sampled_indices_);
+    if (viz_params.nodes) {
+      if (boundary_loops_.size() == 0)
+        extractNodeBoundaries();
+      vizNodes<PointT>(viewer, *pc_, *mesh_, nodes_vertices_, sampled_indices_, boundary_loops_);
+    }
   }
 
   while (!viewer->wasStopped()) {
