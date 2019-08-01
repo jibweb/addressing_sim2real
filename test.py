@@ -63,7 +63,8 @@ if __name__ == "__main__":
     if p.dataset == DATASETS.ModelNet10.name:
         pregex = "/*_full_wnormals_wattention.ply"
     elif p.dataset == DATASETS.ModelNet10PLY.name:
-        pregex = "/*_bin_visible_normals_bin.ply"  # else "/*_bin.ply"
+        pregex = "/*[0-9]_visible_normals_bin.ply"  # Manifold models
+        # pregex = "/*_bin_visible_normals_bin.ply"  # TSDF models
     elif p.dataset == DATASETS.ScanNet.name:
         pregex = "*.ply"
     dataset = Dataset(batch_size=p.batch_size,
