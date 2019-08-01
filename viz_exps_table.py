@@ -1,4 +1,5 @@
 import argparse
+import dfgui
 import os
 import pandas as pd
 import yaml
@@ -33,9 +34,4 @@ if __name__ == "__main__":
     if not args.no_drop:
         df = df.drop(columns=KEYS_TO_DROP)
 
-    with open(OUTPUT_SAVE + "/exps_table.html", "w") as fp:
-        with open(OUTPUT_SAVE + "/exps_header.html") as fhead:
-            fp.write(fhead.read())
-        fp.write(df.to_html(classes="display"))
-        with open(OUTPUT_SAVE + "/exps_footer.html") as ffoot:
-            fp.write(ffoot.read())
+    dfgui.show(df)
