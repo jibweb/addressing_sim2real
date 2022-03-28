@@ -47,14 +47,17 @@ cdef extern from "graph_construction.h":
 
         # General
         # void initialize()
-        int initializeMesh(bool curv_sampling, double* adj_mat, float neigh_size)
+        void initializeMesh();
+        void initializeMesh(float* vertices, unsigned int vertex_nb, int* triangles, unsigned int triangle_nb);
+        void initializeMesh(float* vertices, unsigned int vertex_nb, int* triangles, unsigned int triangle_nb, float* normals);
+        int initializeParts(bool curv_sampling, double* adj_mat, float neigh_size)
         void correctAdjacencyForValidity(double* adj_mat)
         void getValidIndices(int* valid_indices)
         void vizGraph(double* adj_mat, VizParams)
 
         # Node features
         void lEsfNodeFeatures(double** result, unsigned int)
-        void coordsSetNodeFeatures(double** result, unsigned int feat_nb, unsigned int num_channels)
+        void coordsSetNodeFeatures(double** result, unsigned int feat_nb, bool use_zlrf, unsigned int num_channels)
         void sphNodeFeatures(double** result, int* tconv_idx, unsigned int image_size,  unsigned int num_channels, SphParams)
         void pointProjNodeFeatures(double** result, int* tconv_idx, unsigned int image_size)
 
@@ -65,7 +68,7 @@ cdef extern from "graph_construction.h":
         # Edge features
         void coordsEdgeFeatures(double* edge_feats)
         void rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal)
-        void tconvEdgeFeatures(int* tconv_idx)
+        void tconvEdgeFeatures(int* tconv_idx, double* tconv_angle)
 
 
 class NanNormals(Exception):
@@ -81,11 +84,25 @@ cdef class PyGraph:
         self.nodes_nb = nodes_nb
         self.c_graph = new GraphConstructor(fn, gridsize, nodes_nb, debug)
 
-    def initialize_mesh(self, bool angle_sampling, float neigh_size):
+    def initialize_mesh_from_file(self):
+        self.c_graph.initializeMesh()
+
+    def initialize_mesh_from_array(self, np.ndarray[float, ndim=2, mode="c"] vertices,
+                                   np.ndarray[int, ndim=2, mode="c"] triangles,
+                                   np.ndarray[float, ndim=2, mode="c"] normals=None):
+        if normals:
+            self.c_graph.initializeMesh(&vertices[0, 0], vertices.shape[0],
+                                        &triangles[0, 0], triangles.shape[0],
+                                        &normals[0, 0])
+        else:
+            self.c_graph.initializeMesh(&vertices[0, 0], vertices.shape[0],
+                                        &triangles[0, 0], triangles.shape[0])
+
+    def initialize_parts(self, bool angle_sampling, float neigh_size):
         cdef np.ndarray[double, ndim=2, mode="c"] adj_mat = np.zeros([self.nodes_nb,
                                                                       self.nodes_nb],
                                                                      dtype=np.float64)
-        result = self.c_graph.initializeMesh(angle_sampling, &adj_mat[0, 0], neigh_size)
+        result = self.c_graph.initializeParts(angle_sampling, &adj_mat[0, 0], neigh_size)
 
         if result == -1:
             raise NanNormals
@@ -187,10 +204,10 @@ cdef class PyGraph:
                                            image_size)
         return node_feats2d, tconv_indices
 
-    def node_features_coords_set(self, feat_nb, num_channels):
+    def node_features_coords_set(self, feat_nb, feat_config, num_channels):
         """
         """
-        cdef double **node_feats2d_ptr = <double **> malloc(self.nodes_nb*sizeof(double *))
+        cdef double **node_feats2d_ptr = <double **> malloc((self.nodes_nb)*sizeof(double *))
         node_feats2d = []
         cdef np.ndarray[double, ndim=2, mode="c"] tmp
         arr_shape = [feat_nb, num_channels]
@@ -202,6 +219,7 @@ cdef class PyGraph:
 
         self.c_graph.coordsSetNodeFeatures(node_feats2d_ptr,
                                            feat_nb,
+                                           feat_config["use_zlrf"],
                                            num_channels)
         return node_feats2d
 
@@ -240,9 +258,11 @@ cdef class PyGraph:
     def edge_features_tconv(self):
         cdef np.ndarray[int, ndim=2, mode="c"] tconv_indices = np.zeros([self.nodes_nb, 9],
                                                                         dtype=np.int32)
-        self.c_graph.tconvEdgeFeatures(&tconv_indices[0, 0])
+        cdef np.ndarray[double, ndim=2, mode="c"] tconv_angle = np.zeros([self.nodes_nb, 9],
+                                                                        dtype=np.float64)
+        self.c_graph.tconvEdgeFeatures(&tconv_indices[0, 0], &tconv_angle[0, 0])
 
-        return tconv_indices
+        return tconv_indices, tconv_angle
 
     def __dealloc__(self):
         del self.c_graph

@@ -67,14 +67,17 @@ public:
     }
 
   // General
-  int initializeMesh(bool angle_sampling, double* adj_mat, float neigh_size);
+  void initializeMesh();
+  void initializeMesh(float* vertices, uint vertex_nb, int* triangles, uint triangle_nb);
+  void initializeMesh(float* vertices, uint vertex_nb, int* triangles, uint triangle_nb, float* normals);
+  int initializeParts(bool angle_sampling, double* adj_mat, float neigh_size);
   void correctAdjacencyForValidity(double* adj_mat);
   void getValidIndices(int* valid_indices);
   void vizGraph(double* adj_mat, VizParams viz_params);
 
   // Node features
   void lEsfNodeFeatures(double** result, unsigned int feat_nb);
-  void coordsSetNodeFeatures(double** result, unsigned int feat_nb, unsigned int num_channels);
+  void coordsSetNodeFeatures(double** result, unsigned int feat_nb, bool use_zlrf, unsigned int num_channels);
   void sphNodeFeatures(double** result, int* tconv_idx, uint image_size, uint num_channels, SphParams sph_params);
   void pointProjNodeFeatures(double** result, int* tconv_idx, uint image_size);
 
@@ -85,5 +88,5 @@ public:
   // Edge features
   void coordsEdgeFeatures(double* edge_feats);
   void rotZEdgeFeatures(double* edge_feats, float min_angle_z_normal);
-  void tconvEdgeFeatures(int* tconv_idx);
+  void tconvEdgeFeatures(int* tconv_idx, double* tconv_angle);
 };

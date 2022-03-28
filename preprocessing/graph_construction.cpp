@@ -33,18 +33,9 @@
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-int GraphConstructor::initializeMesh(bool angle_sampling, double* adj_mat, float sampling_target_val) {
-
-  if (!debug_)
-    pcl::console::setVerbosityLevel(pcl::console::L_ALWAYS);
-
-  ScopeTime t("Graph Initialization", debug_);
-
-  {
-    ScopeTime t1("Tinyply file opening", debug_);
-    loadPLY(filename_, *pc_, *mesh_);
-  }
-
+void GraphConstructor::initializeMesh() {
+  ScopeTime t("Mesh Initialization (from file)", debug_);
+  tinyply::loadPLY(filename_, *pc_, *mesh_);
 
   if (debug_)
     std::cout << "NOT checking for NaN in normals !" << std::endl;
@@ -60,9 +51,111 @@ int GraphConstructor::initializeMesh(bool angle_sampling, double* adj_mat, float
 
   // Data augmentation
   scale_points_unit_sphere<PointT> (*pc_, 1.);
-  // scale_points_unit_sphere (*pc_, gridsize_/2, centroid);
-  // params_.neigh_size = params_.neigh_size * gridsize_/2;
   // augment_data(pc_, params_);
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void GraphConstructor::initializeMesh(float* vertices, uint vertex_nb,
+                                      int* triangles, uint triangle_nb) {
+  ScopeTime t("Normal Computation", debug_);
+
+  // Normal Computation
+  std::vector<Eigen::Vector3f> vertex_normals(vertex_nb, Eigen::Vector3f::Zero());
+  Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, 3, Eigen::RowMajor> > vertices_map(vertices, triangle_nb, 3);
+
+  for (uint tri_idx=0; tri_idx<triangle_nb; tri_idx++) {
+    Eigen::Vector3f p0 = vertices_map.row(triangles[3*tri_idx + 0]);
+    Eigen::Vector3f p1 = vertices_map.row(triangles[3*tri_idx + 1]);
+    Eigen::Vector3f p2 = vertices_map.row(triangles[3*tri_idx + 2]);
+
+    Eigen::Vector3f tri_normal = triangle_normal(p0, p1, p2);
+    vertex_normals[triangles[3*tri_idx + 0]] += tri_normal;
+    vertex_normals[triangles[3*tri_idx + 1]] += tri_normal;
+    vertex_normals[triangles[3*tri_idx + 2]] += tri_normal;
+
+  }
+
+
+  for (uint pt_idx=0; pt_idx<vertex_nb; pt_idx++) {
+    Eigen::Vector3f normal = vertex_normals[pt_idx];
+    normal.normalize();
+
+    vertex_normals[pt_idx] = normal;
+  }
+
+  // Initialize with the newly computed normals
+  initializeMesh(vertices, vertex_nb, triangles, triangle_nb, vertex_normals[0].data());
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void GraphConstructor::initializeMesh(float* vertices, uint vertex_nb,
+                                      int* triangles, uint triangle_nb,
+                                      float* normals) {
+  ScopeTime t("Mesh Initialization (from arrays)", debug_);
+
+  mesh_->polygons.resize(triangle_nb);
+  for (uint tri_idx=0; tri_idx < triangle_nb; tri_idx++) {
+    mesh_->polygons[tri_idx].vertices.resize(3);
+
+    mesh_->polygons[tri_idx].vertices[0] = triangles[3*tri_idx + 0];
+    mesh_->polygons[tri_idx].vertices[1] = triangles[3*tri_idx + 1];
+    mesh_->polygons[tri_idx].vertices[2] = triangles[3*tri_idx + 2];
+  }
+
+  pc_->points.resize(vertex_nb);
+  for (uint pt_idx=0; pt_idx < vertex_nb; pt_idx++) {
+    pc_->points[pt_idx].x = vertices[3*pt_idx + 0];
+    pc_->points[pt_idx].y = vertices[3*pt_idx + 1];
+    pc_->points[pt_idx].z = vertices[3*pt_idx + 2];
+
+    pc_->points[pt_idx].normal_x = normals[3*pt_idx + 0];
+    pc_->points[pt_idx].normal_y = normals[3*pt_idx + 1];
+    pc_->points[pt_idx].normal_z = normals[3*pt_idx + 2];
+  }
+
+  if (debug_) {
+    std::cout << "PolygonMesh: " << mesh_->polygons.size() << " triangles" << std::endl;
+    std::cout << "PC size: " << pc_->points.size() << std::endl;
+  }
+
+  // Data augmentation
+  scale_points_unit_sphere<PointT> (*pc_, 1.);
+  // augment_data(pc_, params_);
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+int GraphConstructor::initializeParts(bool angle_sampling, double* adj_mat, float sampling_target_val) {
+
+  // if (!debug_)
+  //   pcl::console::setVerbosityLevel(pcl::console::L_ALWAYS);
+
+  // ScopeTime t("Graph Initialization", debug_);
+
+  // {
+  //   ScopeTime t1("Tinyply file opening", debug_);
+  //   loadPLY(filename_, *pc_, *mesh_);
+  // }
+
+
+  // if (debug_)
+  //   std::cout << "NOT checking for NaN in normals !" << std::endl;
+  // // for (uint pt_idx=0; pt_idx<pc_->points.size(); pt_idx++) {
+  // //   if (std::isnan(pc_->points[pt_idx].normal_x) || std::isnan(pc_->points[pt_idx].normal_y) || std::isnan(pc_->points[pt_idx].normal_z))
+  // //     return -1;
+  // // }
+
+  // if (debug_) {
+  //   std::cout << "PolygonMesh: " << mesh_->polygons.size() << " triangles" << std::endl;
+  //   std::cout << "PC size: " << pc_->points.size() << std::endl;
+  // }
+
+  // // Data augmentation
+  // scale_points_unit_sphere<PointT> (*pc_, 1.);
+  // // scale_points_unit_sphere (*pc_, gridsize_/2, centroid);
+  // // params_.neigh_size = params_.neigh_size * gridsize_/2;
+  // // augment_data(pc_, params_);
 
 
 
@@ -509,7 +602,7 @@ void GraphConstructor::extractNodeBoundaries() {
 
 
     // --- Find the border vertices from the border faces -----------------------
-    std::set<uint> border_vertex;
+    std::unordered_set<uint> border_vertex;
     std::unordered_map<uint, std::vector<uint> > border_vertex_neighbor;
 
     for (uint elt_idx=0; elt_idx < nodes_elts_[node_idx].size(); elt_idx++) {
@@ -902,14 +995,10 @@ void GraphConstructor::rotZEdgeFeatures(double* edge_feats, float min_angle_z_no
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
+void GraphConstructor::tconvEdgeFeatures(int* tconv_idx, double* tconv_angle) {
   // TODO =====================================================================
   // Fill in the vertex to node association
   node_vertex_association_.resize(pc_->points.size(), std::vector<bool>(nodes_nb_, false));
-  // node_vertex_association_.resize(pc_->points.size());
-  // for (uint i=0; i<node_vertex_association_.size(); i++)
-  //   node_vertex_association_[i].resize(nodes_nb_, false);
-
   for (uint i=0; i<node_face_association_.size(); i++) {
     for (uint j=0; j<3; j++) {
       uint vertex_idx = mesh_->polygons[i].vertices[j];
@@ -937,23 +1026,20 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
     for (uint i=0; i < boundary_loops_[node_idx].size(); i++)
       bnd(i) = boundary_loops_[node_idx][i];
 
-    if (bnd.size() == 0) {
+    if (boundary_loops_[node_idx].size() == 0) {
       if (debug_)
-        std::cout << "bnd.size() " << bnd.size() << std::endl;
+        std::cout << "boundary_loops_[node_idx].size() " << boundary_loops_[node_idx].size() << std::endl;
 
       valid_indices_[node_idx] = false;
       continue;
     }
 
-    std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
-    uint boundary_split_size = static_cast<uint>(bnd.size() / 8);
-
 
     // Find index of maximum value in the new LRF
     int idx_max_val=-1;
     double max_val=-1e3;
-    for (uint i=0; i<bnd.size(); i++) {
-      int vert_idx = bnd(i);
+    for (uint i=0; i<boundary_loops_[node_idx].size(); i++) {
+      int vert_idx = boundary_loops_[node_idx][i];
       Eigen::Vector3f vertex = pc_->points[vert_idx].getVector3fMap();
 
       if (vertex.dot(lrf_[node_idx].row(0)) > max_val) {
@@ -963,38 +1049,62 @@ void GraphConstructor::tconvEdgeFeatures(int* tconv_idx) {
     }
 
 
-    // Fill in the TConv grid
+    // Accumulate the votes over the boundary loop
+    std::vector<std::vector<int> > node_boundary_votes(8, std::vector<int>(nodes_nb_, 0));
+    uint boundary_split_size = static_cast<uint>(boundary_loops_[node_idx].size() / 8);
+
     for (uint grid_idx=0; grid_idx<8; grid_idx++) {
       for (uint cell_idx=0; cell_idx<boundary_split_size; cell_idx++) {
-        uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % bnd.size();
-        // uint cur_vertex = nodes_vertices_[node_idx][bnd(loop_idx)];
-        uint cur_vertex = bnd(loop_idx);
+        uint loop_idx = (idx_max_val + cell_idx + boundary_split_size*grid_idx) % boundary_loops_[node_idx].size();
+        // uint cur_vertex = nodes_vertices_[node_idx][boundary_loops_[node_idx][loop_idx]];
+        uint cur_vertex = boundary_loops_[node_idx][loop_idx];
 
+        bool unlabeled = true;
         for (uint neigh_node_idx=0; neigh_node_idx<nodes_nb_; neigh_node_idx++) {
           if (neigh_node_idx == node_idx)
             continue;
 
-          if (node_vertex_association_[cur_vertex][neigh_node_idx])
+          if (node_vertex_association_[cur_vertex][neigh_node_idx]) {
             node_boundary_votes[grid_idx][neigh_node_idx]++;
+            unlabeled = false;
+          }
+        }
+
+        if (unlabeled) {
+          node_boundary_votes[grid_idx][node_idx]++;
         }
       }
     }
 
+    // Fill in the TConv grid
     tconv_idx[node_idx*9 + 4] = node_idx;
 
     for (uint i=0; i<8; i++) {
       int neigh_idx = node_idx;
+
+      // Find neighboring node index with maximum vote
       int max_votes = 0;
-      for (uint node_idx=0; node_idx<nodes_nb_; node_idx++) {
-        if (node_boundary_votes[i][node_idx] > max_votes) {
-          max_votes = node_boundary_votes[i][node_idx];
-          neigh_idx = node_idx;
+      for (uint grid_node_idx=0; grid_node_idx<nodes_nb_; grid_node_idx++) {
+        if (node_boundary_votes[i][grid_node_idx] > max_votes) {
+          max_votes = node_boundary_votes[i][grid_node_idx];
+          neigh_idx = grid_node_idx;
         }
       }
+
+      // // If it's the current node, we fill with -1 (to get 0. vectors down the line)
+      // if (neigh_idx == node_idx)
+      //   neigh_idx = -1;
+
       if (i < 4)
         tconv_idx[node_idx*9 + i] = neigh_idx;
       else
         tconv_idx[node_idx*9 + i + 1] = neigh_idx;
+    }
+
+    uint tri = sampled_indices_[node_idx];
+    for (uint i=0; i<9; i++){
+      uint neigh_tri = sampled_indices_[tconv_idx[node_idx*9 + i]];
+      tconv_angle[node_idx*9 + i] = acos(std::min(1.0f, fabs(face_normals_[tri].dot(face_normals_[neigh_tri]))));
     }
   }
 }
@@ -1479,7 +1589,7 @@ void GraphConstructor::pointProjNodeFeatures(double** result, int* tconv_idx, ui
 
 
 
-void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint num_channels) {
+void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, bool use_zlrf, uint num_channels) {
   ScopeTime t("Coords Set features computation", debug_);
 
 
@@ -1507,8 +1617,12 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
       Eigen::Vector3f p2 = pc_->points[mesh_->polygons[nodes_elts_[node_idx][rand_idx]].vertices[2]].getVector3fMap();
 
       Eigen::Vector3f coords = u*p0 + v*p1 + w*p2;
-      // Eigen::Vector3f proj_coords = lrf_[node_idx] * (coords - nodes_mean_[node_idx]);
-      Eigen::Vector3f proj_coords = zlrf_[node_idx] * (coords - nodes_mean_[node_idx]);
+      Eigen::Vector3f proj_coords;
+
+      if (use_zlrf)
+        proj_coords = zlrf_[node_idx] * (coords - nodes_mean_[node_idx]);
+      else
+        proj_coords = lrf_[node_idx] * (coords - nodes_mean_[node_idx]);
 
       if (proj_coords.norm() > scale)
         scale = proj_coords.norm();
@@ -1518,7 +1632,7 @@ void GraphConstructor::coordsSetNodeFeatures(double** result, uint feat_nb, uint
       result[node_idx][num_channels*feat_idx + 2] = proj_coords(2);
 
       if (num_channels == 4)
-        result[node_idx][num_channels*feat_idx + 3] = coords(2);
+        result[node_idx][num_channels*feat_idx + 3] = face_angle_[nodes_elts_[node_idx][rand_idx]];
     }
 
     for (uint feat_idx=0; feat_idx<feat_nb; feat_idx++) {
@@ -1543,8 +1657,8 @@ void GraphConstructor::vizGraph(double* adj_mat, VizParams viz_params) {
 
   {
     ScopeTime t("Visualization setup", debug_);
-    viewer->setBackgroundColor (0, 0, 0);
-    viewer->addCoordinateSystem (1., "coords", 0);
+    viewer->setBackgroundColor (255, 255, 255);
+    // viewer->addCoordinateSystem (1., "coords", 0);
 
     if (viz_params.curvature)
       vizFaceAngle(viewer, *pc_, *mesh_, face_angle_);

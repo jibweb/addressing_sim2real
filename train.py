@@ -102,7 +102,7 @@ if __name__ == "__main__":
             pregex = "/*[0-9]_visible_normals_bin.ply"  # Manifold models
             # pregex = "/*_bin_visible_normals_bin.ply"  # TSDF models
         elif p.dataset == DATASETS.ScanNet.name:
-            pregex = "*.ply"
+            pregex = "*_wnormals.ply"
         pbalance_train_set = True  # False if p.dataset == DATASETS.ScanNet.name \
         #    else True
         dataset = Dataset(batch_size=p.batch_size,

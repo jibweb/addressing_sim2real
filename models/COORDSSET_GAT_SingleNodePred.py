@@ -4,7 +4,7 @@ from utils.logger import TimeScope
 from utils.tf import fc, fc_bn, define_scope
 from utils.params import params as p
 
-from layers import conv2d_bn, point_conv, conv1d_bn, g_2d_k, graph_conv
+from layers import conv2d_bn, point_conv, conv1d_bn, g_2d_k, attn_head
 
 
 MODEL_NAME = "COORDSSET_GAT_MaxPool"
@@ -54,6 +54,9 @@ class Model(object):
             self.y = tf.placeholder(tf.float32,
                                     [None, p.num_classes],
                                     name="y")
+            self.mask = tf.placeholder(tf.float32,
+                                       [None],
+                                       name="mask")
             self.is_training = tf.placeholder(tf.bool, name="is_training")
             self.pool_drop = tf.placeholder(tf.float32, name="pool_drop_prob")
             self.bn_decay = bn_decay
@@ -71,6 +74,9 @@ class Model(object):
         xb_bias_mat = [np.array(x_i[1]) for x_i in x_batch]
         xb_edge_feats = [np.array(x_i[2]) for x_i in x_batch]
         xb_valid_pts = [np.diag(x_i[3]) for x_i in x_batch]
+        xb_mask = [item for x_i in x_batch for item in x_i[3]]
+
+        y_batch = [val for val in y_batch for i in range(p.nodes_nb)]
 
         pool_drop = p.pool_drop_prob if is_training else 0.
 
@@ -81,7 +87,8 @@ class Model(object):
             self.valid_pts: xb_valid_pts,
             self.y: y_batch,
             self.pool_drop: pool_drop,
-            self.is_training: is_training
+            self.is_training: is_training,
+            self.mask: xb_mask
         }
 
     @define_scope
@@ -154,20 +161,19 @@ class Model(object):
 
             gcn_out = feat_gcn
 
-        # --- Set Pooling -----------------------------------------------------
-        with tf.variable_scope('graph_pool'):
+        # --- Classification --------------------------------------------------
+        with tf.variable_scope('classification'):
             valid_pts = self.valid_pts
-
             gcn_filt = tf.matmul(valid_pts, gcn_out)
-            max_gg = tf.reduce_max(gcn_filt, axis=1, name='max_g')
-            fcg = fc_bn(max_gg, p.graph_hid_units[-1]*p.attn_head_nb[-1],
+            gcn_reshaped = tf.reshape(gcn_filt,
+                                      [-1, p.graph_hid_units[-1]*p.attn_head_nb[-1]])
+
+            fcg = fc_bn(gcn_reshaped, p.graph_hid_units[-1]*p.attn_head_nb[-1],
                         scope='fcg',
                         is_training=self.is_training,
                         bn_decay=self.bn_decay,
                         reg_constant=p.reg_constant)
 
-        # --- Classification --------------------------------------------------
-        with tf.variable_scope('classification'):
             fc_2 = fc_bn(fcg, 128, scope='fc_2',
                          is_training=self.is_training,
                          bn_decay=self.bn_decay,
@@ -184,6 +190,7 @@ class Model(object):
             diff = tf.nn.softmax_cross_entropy_with_logits(
                     labels=self.y,
                     logits=self.inference)
+            diff = tf.boolean_mask(diff, self.mask, name='boolean_mask')
 
             cross_entropy = tf.reduce_mean(diff)
         tf.summary.scalar('cross_entropy_avg', cross_entropy)

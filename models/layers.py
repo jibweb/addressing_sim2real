@@ -260,6 +260,9 @@ def point_conv(name, input_tensor, index_tensor, filter_size,
                out_channels, stddev=0.05, extra_chan=None):
     with tf.variable_scope(name):
         in_channels = input_tensor.get_shape()[-1].value
+        if extra_chan is not None:
+            in_channels += 1
+
         W = tf.get_variable('W', [1, filter_size, in_channels, out_channels],
                             initializer=tf.contrib.layers.xavier_initializer(True))
         b = tf.get_variable('b', [out_channels],

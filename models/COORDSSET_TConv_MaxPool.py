@@ -32,6 +32,10 @@ class Model(object):
                                               (None,
                                                9),
                                               name="tconv_index")
+            self.tconv_angle = tf.placeholder(tf.float32,
+                                              (None,
+                                               9),
+                                              name="tconv_angle")
 
             self.valid_pts = tf.placeholder(tf.float32,
                                             [None,
@@ -64,7 +68,8 @@ class Model(object):
     def get_feed_dict(self, x_batch, y_batch, is_training):
         xb_node_feats = [np.array(x_i[0]) for x_i in x_batch]
         xb_bias_mat = [np.array(x_i[1]) for x_i in x_batch]
-        xb_tconv_index = [np.array(x_i[2]) for x_i in x_batch]
+        xb_tconv_index = [np.array(x_i[2][0]) for x_i in x_batch]
+        xb_tconv_angle = [np.array(x_i[2][1]) for x_i in x_batch]
         xb_valid_pts = [np.diag(x_i[3]) for x_i in x_batch]
 
         pool_drop = p.pool_drop_prob if is_training else 0.
@@ -76,6 +81,7 @@ class Model(object):
             self.node_feats: xb_node_feats,
             self.bias_mat: xb_bias_mat,
             self.tconv_index: np.array(xb_tconv_index).reshape((-1, 9)),
+            self.tconv_angle: np.array(xb_tconv_angle).reshape((-1, 9)),
             self.valid_pts: xb_valid_pts,
             self.y: y_batch,
             self.pool_drop: pool_drop,
@@ -88,6 +94,7 @@ class Model(object):
 
         # --- Features dim reduction ------------------------------------------
         feat_red_out = self.node_feats
+        print feat_red_out.get_shape()
 
         with tf.variable_scope('feat_dim_red'):
             for i in range(len(p.red_hid_units)):
@@ -112,6 +119,8 @@ class Model(object):
             feat_red_out = tf.reshape(feat_red_out,
                                       [-1, p.red_hid_units[-1]/2])
 
+        print feat_red_out.get_shape()
+
         # --- Graph attention layers ------------------------------------------
         with tf.variable_scope('tang_conv_layers'):
             # Pre setup
@@ -122,7 +131,8 @@ class Model(object):
                 feat_tconv = point_conv("tang_conv_" + str(i),
                                         feat_tconv, self.tconv_index,
                                         filter_size=9,
-                                        out_channels=p.tconv_hid_units[i])
+                                        out_channels=p.tconv_hid_units[i],
+                                        extra_chan=self.tconv_angle)
 
             tconv_out = tf.reshape(feat_tconv,
                                    [-1, p.nodes_nb, p.tconv_hid_units[-1]])

@@ -7,7 +7,7 @@ from utils.params import params as p
 from layers import conv2d_bn, point_conv, conv1d_bn, g_2d_k, graph_conv
 
 
-MODEL_NAME = "COORDSSET_GAT_MaxPool"
+MODEL_NAME = "COORDSSET_GCN_MaxPool"
 
 # # Dropout prob params
 # p.define("attn_drop_prob", 0.0)
@@ -140,14 +140,14 @@ class Model(object):
             for i in range(len(p.graph_hid_units)):
                 gcn_heads = []
                 for head_idx in range(p.attn_head_nb[i]):
-                    head = attn_head(feat_gcn,
-                                     out_sz=p.graph_hid_units[i],
-                                     bias_mat=bias_mat,
-                                     activation=tf.nn.elu,
-                                     reg_constant=p.reg_constant,
-                                     is_training=self.is_training,
-                                     bn_decay=self.bn_decay,
-                                     scope="attn_heads_" + str(i) + "/head_" + str(head_idx))
+                    head = graph_conv(feat_gcn,
+                                      out_sz=p.graph_hid_units[i],
+                                      bias_mat=bias_mat,
+                                      activation=tf.nn.elu,
+                                      reg_constant=p.reg_constant,
+                                      is_training=self.is_training,
+                                      bn_decay=self.bn_decay,
+                                      scope="graph_conv_" + str(i) + "/head_" + str(head_idx))
                     gcn_heads.append(head)
 
                 feat_gcn = tf.concat(gcn_heads, axis=-1)

@@ -32,6 +32,57 @@ void getJetColour(float v,
 }
 
 
+/*
+ * H(Hue): 0 - 360 degree (integer)
+ * S(Saturation): 0 - 1.00 (double)
+ * V(Value): 0 - 1.00 (double)
+ *
+ * output[3]: Output, array size 3, int
+ */
+void HSVtoRGB(int H, double S, double V,
+              pcl::PointXYZRGB & p) {
+  double C = S * V;
+  double X = C * (1 - abs(fmod(H / 60.0, 2) - 1));
+  double m = V - C;
+  double Rs, Gs, Bs;
+
+  if(H >= 0 && H < 60) {
+    Rs = C;
+    Gs = X;
+    Bs = 0;
+  }
+  else if(H >= 60 && H < 120) {
+    Rs = X;
+    Gs = C;
+    Bs = 0;
+  }
+  else if(H >= 120 && H < 180) {
+    Rs = 0;
+    Gs = C;
+    Bs = X;
+  }
+  else if(H >= 180 && H < 240) {
+    Rs = 0;
+    Gs = X;
+    Bs = C;
+  }
+  else if(H >= 240 && H < 300) {
+    Rs = X;
+    Gs = 0;
+    Bs = C;
+  }
+  else {
+    Rs = C;
+    Gs = 0;
+    Bs = X;
+  }
+
+  p.r = static_cast<int>((Rs + m) * 255);
+  p.g = static_cast<int>((Gs + m) * 255);
+  p.b = static_cast<int>((Bs + m) * 255);
+}
+
+
 template <class T>
 void vizGraphSkeleton(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
                       pcl::PointCloud<T> & pc,
@@ -51,7 +102,15 @@ void vizGraphSkeleton(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewe
     p.y = v(1);
     p.z = v(2);
 
-    viewer->addSphere<T>(p, 0.01, 1., 0., 0., "sphere_" +std::to_string(tri_idx));
+    int H = static_cast<int>(static_cast<float>(i) / sampled_indices.size() * 360);
+    pcl::PointXYZRGB col;
+    HSVtoRGB(H, 1.0, 1.0, col);
+
+    viewer->addSphere<T>(p, 0.05,
+                         static_cast<float>(col.r) / 255.,
+                         static_cast<float>(col.g) / 255.,
+                         static_cast<float>(col.b) / 255.,
+                         "sphere_" +std::to_string(tri_idx));
 
     for (uint i2=i; i2<nodes_nb; i2++) {
       if (adj_mat[nodes_nb*i + i2] > 0.) {
@@ -104,9 +163,7 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
   viz_cloud->points.reserve(to_reserve);
 
   for (uint node_idx=0; node_idx<sampled_indices.size(); node_idx++) {
-    uint r = rand() % 210;
-    uint g = rand() % 210;
-    uint b = rand() % 210;
+    int H = static_cast<int>(static_cast<float>(node_idx) / sampled_indices.size() * 360);
 
     std::vector<bool> is_boundary(pc.points.size(), false);
     for (uint i=0; i<boundary_loops[node_idx].size(); i++)
@@ -117,6 +174,7 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
     v += pc.points[mesh.polygons[tri_idx].vertices[1]].getVector3fMap ();
     v += pc.points[mesh.polygons[tri_idx].vertices[2]].getVector3fMap ();
     v /= 3;
+    v.normalize();
 
     T node_center_pt;
     node_center_pt.x = v(0);
@@ -125,19 +183,15 @@ void vizNodes(boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer,
 
     for (uint pt_idx=0; pt_idx < nodes_vertices[node_idx].size(); pt_idx++) {
       pcl::PointXYZRGB p;
-      float exploded_view_scale = 0.01;
+      float exploded_view_scale = 0.0;
       p.x = pc.points[nodes_vertices[node_idx][pt_idx]].x + exploded_view_scale*node_center_pt.x;
       p.y = pc.points[nodes_vertices[node_idx][pt_idx]].y + exploded_view_scale*node_center_pt.y;
       p.z = pc.points[nodes_vertices[node_idx][pt_idx]].z + exploded_view_scale*node_center_pt.z;
 
       if (is_boundary[nodes_vertices[node_idx][pt_idx]]) {
-        p.r = r + 45;
-        p.g = g + 45;
-        p.b = b + 45;
+        HSVtoRGB(H, 1.0, 0.5, p);
       } else {
-        p.r = r;
-        p.g = g;
-        p.b = b;
+        HSVtoRGB(H, 1.0, 1.0, p);
       }
 
       viz_cloud->points.push_back(p);

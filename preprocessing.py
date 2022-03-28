@@ -1,6 +1,7 @@
 from enum import Enum
 from functools import partial
 import numpy as np
+import trimesh
 
 from utils.params import params as p
 from py_graph_construction import PyGraph, NanNormals
@@ -116,7 +117,39 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat, with_fn):
     gc = PyGraph(fn, nodes_nb=p.nodes_nb, debug=p.debug, gridsize=p.gridsize)
     # gc.initialize()
     # gc.sample_points(p.min_angle_z_normal)
-    adj_mat = gc.initialize_mesh(p.angle_sampling, p.neigh_size)
+    gc.initialize_mesh_from_file()
+
+    # ------------------------ OCCL EXP ---------------------------------------
+    # mesh = trimesh.load_mesh(fn)
+    # occlusion = 0.6
+
+    # if occlusion:
+    #     min_occl = float(occlusion)
+    #     adjacency = [[] for _ in range(len(mesh.faces))]
+    #     for (e1, e2) in mesh.face_adjacency:
+    #         adjacency[e1].append(e2)
+    #         adjacency[e2].append(e1)
+
+    #     start_face = np.random.randint(len(mesh.faces))
+    #     to_rm = set([start_face])
+    #     queue = [start_face]
+    #     occl = float(len(to_rm)) / len(mesh.faces)
+    #     while occl < min_occl and len(queue) > 0:
+    #         cur_idx = queue.pop(0)
+    #         for f in adjacency[cur_idx]:
+    #             if f not in to_rm:
+    #                 queue.append(f)
+    #                 to_rm.add(f)
+
+    #         occl = float(len(to_rm)) / len(mesh.faces)
+
+    #     to_keep = [idx for idx in range(len(mesh.faces)) if not idx in to_rm]
+    #     mesh = trimesh.util.submesh(mesh, [to_keep])[0]
+
+    # gc.initialize_mesh_from_array(mesh.vertices.astype(np.float32), mesh.faces.astype(np.int32))
+    # ------------------------ /OCCL EXP --------------------------------------
+
+    adj_mat = gc.initialize_parts(p.angle_sampling, p.neigh_size)
 
     if p.edge_feat_type == edge_feat.ROT_Z.name:
         edge_feats = gc.edge_features_rot_z(p.min_angle_z_normal)
@@ -132,7 +165,7 @@ def graph_preprocess_new(fn, p, edge_feat, vertex_feat, with_fn):
                                           sph_config=p.feat_config)
     elif p.feat_type == vertex_feat.COORDSSET.name:
         node_feats = gc.node_features_coords_set(
-                p.feat_nb[0], p.feat_nb[1])
+                p.feat_nb[0], p.feat_config, p.feat_nb[1])
 
     gc.correct_adjacency_for_validity(adj_mat)
     valid_indices = gc.get_valid_indices()

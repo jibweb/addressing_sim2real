@@ -17,10 +17,13 @@ from utils.viz import plot_confusion_matrix
 # ---- Parameters ----
 # Generic
 set_log_level("INFO")
-TEST_REPEAT = 3
+TEST_REPEAT = 5
 
 
 if __name__ == "__main__":
+
+    p.debug = True
+
     # === SETUP ===============================================================
     # --- Parse arguments for specific params file ----------------------------
     parser = argparse.ArgumentParser("Test a given model on a given dataset")
@@ -57,9 +60,7 @@ if __name__ == "__main__":
             sys.exit()
 
     # --- Pre processing function setup ---------------------------------------
-    #--- CHANGED ---
-    # p.neigh_size = 510.
-    #-- /CHANGED ---
+    p.neigh_size = 210
     feat_compute = get_graph_preprocessing_fn(p, with_fn=True)
 
     # --- Dataset setup -------------------------------------------------------
@@ -88,33 +89,33 @@ if __name__ == "__main__":
     # --- Accuracy setup ------------------------------------------------------
     with tf.variable_scope('accuracy'):
         #--------- CHANGED -----------------------------------------------
-        # inference = tf.reshape(model.inference, [-1, p.nodes_nb, p.num_classes])
-        # mask = tf.reshape(model.mask, [-1, p.nodes_nb, p.num_classes])
-        # y = tf.reshape(model.y, [-1, p.nodes_nb, p.num_classes])
+        obj_inference = tf.reshape(model.inference, [-1, p.nodes_nb, p.num_classes])
 
-        # inference = tf.boolean_mask(model.inference, model.mask)
-        # y = tf.boolean_mask(model.y, model.mask)
+        obj_mask = tf.reshape(model.mask, [-1, p.nodes_nb])
+        obj_y = tf.reshape(model.y, [-1, p.nodes_nb, p.num_classes])
 
-        # # inference = tf.reduce_max(inference, axis=1)
-        # # y = tf.reduce_max(y, axis=1)
+        inference = tf.boolean_mask(model.inference, model.mask)
+        y = tf.boolean_mask(model.y, model.mask)
 
-
-        # correct_prediction = tf.equal(
-        #         tf.argmax(inference, 1),
-        #         tf.argmax(y, 1))
-        # confusion = tf.confusion_matrix(
-        #         labels=tf.argmax(y, 1),
-        #         predictions=tf.argmax(inference, 1),
-        #         num_classes=p.num_classes)
-        #--------- /CHANGED -----------------------------------------------
+        # inference = tf.reduce_sum(inference, axis=1)
+        # y = tf.reduce_max(y, axis=1)
 
         correct_prediction = tf.equal(
-                tf.argmax(model.inference, 1),
-                tf.argmax(model.y, 1))
+                tf.argmax(inference, 1),
+                tf.argmax(y, 1))
         confusion = tf.confusion_matrix(
-                labels=tf.argmax(model.y, 1),
-                predictions=tf.argmax(model.inference, 1),
+                labels=tf.argmax(y, 1),
+                predictions=tf.argmax(inference, 1),
                 num_classes=p.num_classes)
+        #--------- /CHANGED -----------------------------------------------
+
+        # correct_prediction = tf.equal(
+        #         tf.argmax(model.inference, 1),
+        #         tf.argmax(model.y, 1))
+        # confusion = tf.confusion_matrix(
+        #         labels=tf.argmax(model.y, 1),
+        #         predictions=tf.argmax(model.inference, 1),
+        #         num_classes=p.num_classes)
 
         accuracy = tf.reduce_mean(tf.cast(correct_prediction,
                                           tf.float32))
@@ -137,39 +138,76 @@ if __name__ == "__main__":
         print p, "\n"
         test_iter = 0
         total_acc = 0.
+        total_obj_acc = 0.
         total_cm = np.zeros((p.num_classes, p.num_classes), dtype=np.int32)
+
+        obj_cls_preds = np.zeros((p.num_classes), dtype=float)
+        obj_cls_count = np.zeros((p.num_classes), dtype=float)
 
         for repeat in range(TEST_REPEAT):
             for xs, ys in dataset.test_batch(process_fn=feat_compute):
                 with TimeScope("accuracy", debug_only=True):
-                    summary, preds, acc, loss, cm = sess.run(
+                    # summary, preds, acc, loss, cm = sess.run(
+                    summary, preds, ys, masks, acc, cm = sess.run(
                         [merged,
-                         correct_prediction,
+                         obj_inference,
+                         obj_y,
+                         obj_mask,
                          accuracy,
-                         model.loss,
                          confusion],
+                        # correct_prediction,
+                        # accuracy,
+                        # model.loss,
+                        # confusion],
                         feed_dict=model.get_feed_dict(xs, ys,
                                                       is_training=False))
                     test_writer.add_summary(summary, test_iter)
 
                 x_fns = np.array([x_i[-1] for x_i in xs])
 
+                masks = masks.astype(bool)
+                batch_size = preds.shape[0]
+
+                object_preds = []
+
+                for b in range(batch_size):
+                    # print preds[b][masks[b]].shape, np.sum(preds[b][masks[b]], axis=0).shape
+                    is_correct = np.argmax(ys[b][0]) == np.argmax(np.sum(preds[b][masks[b]], axis=0))
+                    object_preds.append(is_correct)
+                    cls_idx = int(np.argmax(ys[b][0]))
+                    obj_cls_preds[cls_idx] += float(is_correct)
+                    obj_cls_count[cls_idx] += 1.
+                    # print ys[b][masks[b]].shape, np.argmax(ys[b][masks[b]], axis=1).shape, np.unique(np.argmax(ys[b][masks[b]], axis=1))
+                obj_acc = np.mean(object_preds)
+                # acc = np.mean((np.argmax(ys, axis=1) == np.argmax(preds, axis=1)).astype(float))
+                # print acc
+
                 # misclassified_fns = x_fns[np.logical_not(preds)]
 
                 total_acc = (test_iter*total_acc + acc) / (test_iter + 1)
+                total_obj_acc = (test_iter*total_obj_acc + obj_acc) / (test_iter + 1)
                 total_cm += cm
 
-                log("Accurracy: {:.1f} / {:.1f} (loss: {:.3f})",
+                log("Accurracy: {:.1f} / {:.1f} // Obj Acc. {:.1f} / {:.1f}",
                     100.*total_acc,
                     100.*acc,
-                    loss)
+                    100.*total_obj_acc,
+                    100.*obj_acc)
 
                 test_iter += 1
 
         print ""
-        # print "Class Accuracy:", np.mean(100.*total_cm.diagonal() / np.sum(total_cm, axis=1))
-        print "Class Accuracy: {:.1f}".format(
-            np.mean(100.*total_cm.diagonal() / np.sum(total_cm, axis=1)))
+        indices = np.logical_not(np.isnan(100.*total_cm.diagonal() / np.sum(total_cm, axis=1)))
+        total_obj_indices = obj_cls_count != 0.
+        total_obj_cls_acc = 100. * np.mean(obj_cls_preds[total_obj_indices] / obj_cls_count[total_obj_indices])
+        print "Class Accuracy: {:.1f} // Obj class Accuracy: {:.1f}".format(
+            np.mean((100.*total_cm.diagonal() / np.sum(total_cm, axis=1))[indices]),
+            total_obj_cls_acc)
+
+        CLASSES = np.array(sorted(CLASS_DICT.keys()))
+        for cls_acc, cls_name in zip(obj_cls_preds[total_obj_indices] / obj_cls_count[total_obj_indices], CLASSES[total_obj_indices]):
+            print "{}: {:.2f}".format(cls_name, 100. * cls_acc)
+
         if different_test_dataset:
             confmat_filename = "{}conf_matrix_{}_tested_on_{}".format(
                 SAVE_DIR,
